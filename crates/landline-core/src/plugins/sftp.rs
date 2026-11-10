@@ -312,6 +312,11 @@ impl Progress<'_> {
         self.reporter.delegate.transfer_updated(&self.transfer);
     }
 
+    fn cancel(mut self) {
+        self.transfer.state = TransferState::Cancelled;
+        self.reporter.delegate.transfer_updated(&self.transfer);
+    }
+
     fn finish(mut self, result: &Result<(), SftpError>, path: PathBuf) {
         self.transfer.state = match result {
             Ok(()) => TransferState::Finished { path },
@@ -346,29 +351,43 @@ async fn run(request: Request, mount: &Mount, reporter: &Reporter) -> bool {
             });
             let _ = reply.send(entries.map_err(|error| storage_error(&error)));
         }
+        // The caller dropping its future (closing the reply channel) cancels
+        // a transfer: the SFTP client cleans up after itself when dropped.
         Request::Download {
             remote,
             local,
-            reply,
+            mut reply,
         } => {
             let mut progress = reporter.start(&local, TransferDirection::Incoming);
-            let done = session
-                .download(&remote, &local, |done, total| progress.advance(done, total))
-                .await;
-            progress.finish(&done, local);
-            let _ = reply.send(done.map_err(|error| storage_error(&error)));
+            let done = tokio::select! {
+                done = session.download(&remote, &local, |done, total| progress.advance(done, total)) => Some(done),
+                () = reply.closed() => None,
+            };
+            match done {
+                Some(done) => {
+                    progress.finish(&done, local);
+                    let _ = reply.send(done.map_err(|error| storage_error(&error)));
+                }
+                None => progress.cancel(),
+            }
         }
         Request::Upload {
             local,
             remote,
-            reply,
+            mut reply,
         } => {
             let mut progress = reporter.start(&local, TransferDirection::Outgoing);
-            let done = session
-                .upload(&local, &remote, |done, total| progress.advance(done, total))
-                .await;
-            progress.finish(&done, local);
-            let _ = reply.send(done.map_err(|error| storage_error(&error)));
+            let done = tokio::select! {
+                done = session.upload(&local, &remote, |done, total| progress.advance(done, total)) => Some(done),
+                () = reply.closed() => None,
+            };
+            match done {
+                Some(done) => {
+                    progress.finish(&done, local);
+                    let _ = reply.send(done.map_err(|error| storage_error(&error)));
+                }
+                None => progress.cancel(),
+            }
         }
     }
     session.is_closed()

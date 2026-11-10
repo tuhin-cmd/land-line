@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds build/Landline.app: the Rust core, the Swift app, and an ad-hoc
-# signed bundle around them. Needs the Rust toolchain and the Xcode command
-# line tools; full Xcode is not required.
+# Builds build/Landline.app: the Rust core, the Swift app, and a signed
+# bundle around them (ad-hoc unless LANDLINE_SIGN_IDENTITY is set). Needs the
+# Rust toolchain and the Xcode command line tools; full Xcode is not required.
 #
 #   scripts/build-app.sh [--release] [--universal] [--run]
 #
@@ -54,8 +54,13 @@ version=$(cargo pkgid --package landline-core | sed 's/.*[#@]//')
 cp apple/Support/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
 
-# Ad-hoc signature until M6 adds Developer ID signing and notarization.
-codesign --force --sign - --options runtime "$app"
+# macOS ties permissions (Local Network, notifications) to the signature. An
+# ad-hoc signature is a hash of this exact build, so every rebuild is a new
+# app to macOS and has to be allowed again. Set LANDLINE_SIGN_IDENTITY to the
+# name of a code signing certificate in your keychain to keep them: a
+# self-signed one made in Keychain Access is enough for development, and a
+# Developer ID is needed to give the app to anyone else.
+codesign --force --sign "${LANDLINE_SIGN_IDENTITY:--}" --options runtime "$app"
 
 echo "Built $app ($config, ${archs[*]}, version $version)"
 
