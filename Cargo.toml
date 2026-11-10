@@ -11,6 +11,11 @@ publish = false
 [workspace.dependencies]
 landline-core = { path = "crates/landline-core" }
 
+# Dependencies are not stepped through, and their debug info is most of the
+# size of a debug build.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 strip = "debuginfo"
