@@ -38,7 +38,7 @@ There is no Xcode project and full Xcode is not installed: the Command Line Tool
 - The core owns the protocol and network state and never calls a macOS API. Swift owns everything the OS provides. `landline-ffi` adapts types and holds no logic.
 - Every feature works from `landline-cli` before it gets UI.
 - Small commits, one concern each. fmt, clippy, and tests pass before every commit.
-- Do not push unless asked. The project will be open source at `tuhin-cmd/land-line` once the owner publishes it.
+- The project is open source at `tuhin-cmd/land-line` (remote `origin-1`); `origin` is a private copy. Push only when asked, and then to both. Everything committed is public: no personal data, device IDs, addresses or message contents in code, fixtures, docs or commit messages.
 - Never commit real SMS content, phone numbers, device certificates, or keys. Scrub fixtures.
 - Never log notification bodies, SMS text, clipboard contents, or OTPs above `trace` level.
 - Check crate versions with `cargo add`; do not pin from memory.

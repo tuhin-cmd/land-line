@@ -23,7 +23,7 @@ LAN only. No cloud, no account, no relay server.
 | Distribution | Non-sandboxed, Developer ID signed, outside the App Store | Sandbox complicates LAN broadcast, SFTP, and file access for no benefit to a personal tool |
 | Minimum macOS | 14 | `MenuBarExtra` and `@Observable` |
 | Build | **SwiftPM plus shell scripts; no Xcode project** | The owner's Mac is short on disk, so full Xcode is not installed. Everything builds, tests, and bundles with the Command Line Tools |
-| Repo | **Open source.** The public home is `tuhin-cmd/land-line`. Work stays local until the owner says to publish | Owner's decision (2026-11-10) |
+| Repo | **Open source, published 2026-11-10.** The public home is `tuhin-cmd/land-line` (remote `origin-1`). A private `tuhin-cmd/landline` (remote `origin`) holds the same history | Owner's decision |
 | License | **GPL-3.0-or-later** (owner, 2026-11-10) | KDE Connect is GPL, so its source can be read freely while verifying the protocol. Its files are "GPL-2.0-only OR GPL-3.0-only", so any file closely adapted from them must be marked `GPL-3.0-only`. So far everything is written from observed behaviour, not adapted |
 
 ## Out of scope (for now)
@@ -57,7 +57,7 @@ Things learned from the live runs:
 
 Notes from M0 that later milestones should know:
 
-- **Remotes.** `origin-1` is the public `tuhin-cmd/land-line`, the project's eventual home; it holds only the initial commit. `origin` is a private `tuhin-cmd/landline` that received the first M0 commits and is where `main` currently tracks. Do not push to either without the owner asking.
+- **Remotes.** `origin-1` is the public `tuhin-cmd/land-line`; `origin` is the private `tuhin-cmd/landline`, which `main` tracks. Both are at the same commit and CI passes on both (Rust checks on Linux, universal release build and Swift tests on macOS). Push to both when the owner asks to publish.
 - **No Xcode.** The app is a SwiftPM executable (`apple/Package.swift`); `scripts/build-app.sh` wraps it in a bundle with `apple/Support/Info.plist` and signs it ad hoc. `scripts/test-swift.sh` adds the flags the Command Line Tools need to find Swift Testing. Things that may force the question later: notarization in M6 (`notarytool` ships with Xcode; check whether a standalone tool such as `rcodesign` covers it), and app extensions (Share, File Provider), which need their own bundles and entitlements.
 - **Disk.** The Mac had about 6 GB free during M0. Scripts build a debug app for the host architecture by default; `--release --universal` is for CI and releases. Debug info for dependencies is off in the dev profile to keep `target/` small.
 - **The ad-hoc signature changes with every build,** so macOS may ask again for permissions (Local Network, notifications) after a rebuild. A stable signing identity fixes that; a self-signed certificate would do before Developer ID.
