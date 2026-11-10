@@ -701,6 +701,8 @@ impl Manager {
             }
             return;
         }
+        // The type says what happened without saying anything private.
+        debug!(device = %device_id, kind = %packet.kind, "packet received");
         self.delegate.packet_received(device_id, &packet);
         let handler = REGISTRY
             .iter()

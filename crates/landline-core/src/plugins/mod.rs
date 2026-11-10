@@ -178,6 +178,7 @@ impl Context<'_> {
             return;
         };
         if self.recent_otps.insert(&code) {
+            tracing::debug!(device = %self.device_id, digits = code.len(), "one-time code found");
             let otp = OtpCode {
                 code,
                 source: source.to_owned(),
