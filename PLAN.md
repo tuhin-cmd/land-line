@@ -22,8 +22,9 @@ LAN only. No cloud, no account, no relay server.
 | Mac side | **Rust core + SwiftUI app**, bridged with UniFFI | Owner's choice. Core stays portable, UI stays native |
 | Distribution | Non-sandboxed, Developer ID signed, outside the App Store | Sandbox complicates LAN broadcast, SFTP, and file access for no benefit to a personal tool |
 | Minimum macOS | 14 | `MenuBarExtra` and `@Observable` |
-| Repo visibility | Private to start | Owner can open it later |
-| License | **Not chosen yet** | See "Open questions" |
+| Build | **SwiftPM plus shell scripts; no Xcode project** | The owner's Mac is short on disk, so full Xcode is not installed. Everything builds, tests, and bundles with the Command Line Tools |
+| Repo | **Open source.** The public home is `tuhin-cmd/land-line`. Work stays local until the owner says to publish | Owner's decision (2026-11-10) |
+| License | **Not chosen yet**, and now needed before publishing | See "Open questions" |
 
 ## Out of scope (for now)
 
@@ -33,16 +34,18 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 
 | Milestone | State |
 |---|---|
-| M0: skeleton | Built and passing in CI (2026-11-10). One check is still owed: nobody has yet launched the app and seen the version in the menu, because the development Mac has only the Command Line Tools. Install Xcode, run the Build steps in `README.md`, and open the menu to close M0. |
+| M0: skeleton | Built and passing locally (2026-11-10): Rust checks, Swift bridge tests, and `scripts/build-app.sh`, which produces a signed `build/Landline.app` that launches. One check is still owed: the owner clicking the menu bar icon and seeing the core version, because the session that built it had no way to look at the screen. |
 | M1 onward | Not started |
 
 Notes from M0 that later milestones should know:
 
-- **Repo.** `origin` is the private `tuhin-cmd/landline`. A second remote, `origin-1`, points at a public `tuhin-cmd/land-line` that holds only the initial commit. Nothing is pushed there; the owner should decide whether to delete it.
-- **The xcframework is assembled by hand** in `scripts/build-xcframework.sh` (static library, header, module map, `Info.plist`) instead of with `xcodebuild -create-xcframework`, so the script runs without full Xcode. CI builds the app from it with real Xcode.
-- **UniFFI async and callbacks work (risk 7).** `LandlineCore.echo_after` (async) and `CoreDelegate.heartbeat` (callback from a core thread) are placeholders that prove the pattern, covered by `apple/LandlineKit/Tests`. Async methods spawn onto the core's own runtime and await the join handle, so UniFFI's `tokio` feature is not needed. Remove both placeholders when M1 adds real methods.
+- **Remotes.** `origin-1` is the public `tuhin-cmd/land-line`, the project's eventual home; it holds only the initial commit. `origin` is a private `tuhin-cmd/landline` that received the first M0 commits and is where `main` currently tracks. Do not push to either without the owner asking.
+- **No Xcode.** The app is a SwiftPM executable (`apple/Package.swift`); `scripts/build-app.sh` wraps it in a bundle with `apple/Support/Info.plist` and signs it ad hoc. `scripts/test-swift.sh` adds the flags the Command Line Tools need to find Swift Testing. Things that may force the question later: notarization in M6 (`notarytool` ships with Xcode; check whether a standalone tool such as `rcodesign` covers it), and app extensions (Share, File Provider), which need their own bundles and entitlements.
+- **Disk.** The Mac had about 6 GB free during M0. Scripts build a debug app for the host architecture by default; `--release --universal` is for CI and releases. Debug info for dependencies is off in the dev profile to keep `target/` small.
+- **The ad-hoc signature changes with every build,** so macOS may ask again for permissions (Local Network, notifications) after a rebuild. A stable signing identity fixes that; a self-signed certificate would do before Developer ID.
+- **The xcframework is assembled by hand** in `scripts/build-xcframework.sh` (static library, header, module map, `Info.plist`) instead of with `xcodebuild -create-xcframework`.
+- **UniFFI async and callbacks work (risk 7).** `LandlineCore.echo_after` (async) and `CoreDelegate.heartbeat` (callback from a core thread) are placeholders that prove the pattern, covered by `apple/Tests`. Async methods spawn onto the core's own runtime and await the join handle, so UniFFI's `tokio` feature is not needed. Remove both placeholders when M1 adds real methods.
 - **`CoreDelegate` is a UniFFI callback interface** (`Box<dyn CoreDelegate>`), which the core holds for its lifetime. A Swift delegate that holds a strong reference to `LandlineCore` creates a retain cycle.
-- **`swift test` needs full Xcode.** With only the Command Line Tools the `Testing` module is not found.
 
 ## Architecture
 
@@ -79,11 +82,15 @@ landline/
 │   ├── landline-ffi/           UniFFI exports + uniffi-bindgen binary
 │   └── landline-cli/           `landline` binary: discover, pair, listen, send, ls
 ├── scripts/
-│   └── build-xcframework.sh    builds both Mac targets, lipo, generates Swift bindings
+│   ├── build-xcframework.sh    builds the core as a static library, generates Swift bindings
+│   ├── build-app.sh            builds build/Landline.app (calls build-xcframework.sh)
+│   └── test-swift.sh           runs the Swift tests
 └── apple/
-    ├── project.yml             XcodeGen spec (keeps the Xcode project text-diffable)
-    ├── LandlineKit/            Swift package wrapping the XCFramework
-    └── Landline/               SwiftUI app
+    ├── Package.swift           SwiftPM package: the app and LandlineKit
+    ├── Support/Info.plist      bundle metadata, copied into the app by build-app.sh
+    ├── Sources/LandlineKit/    generated Swift bindings to the XCFramework
+    ├── Sources/Landline/       SwiftUI app
+    └── Tests/
 ```
 
 ### Suggested crates
@@ -151,11 +158,11 @@ Each milestone ends with something demonstrable on the real phone. Do not start 
 
 - Cargo workspace with the three crates; `cargo test`, `cargo clippy`, `cargo fmt --check` clean.
 - One UniFFI function (`core_version()`) exported and called from Swift.
-- `scripts/build-xcframework.sh`: build `aarch64-apple-darwin` and `x86_64-apple-darwin`, `lipo`, generate Swift bindings, assemble `LandlineFFI.xcframework`.
-- XcodeGen project; menu bar app that shows the core version.
+- `scripts/build-xcframework.sh`: build the core for one or both Mac architectures, `lipo`, generate Swift bindings, assemble `LandlineFFI.xcframework`.
+- SwiftPM package and `scripts/build-app.sh`; menu bar app that shows the core version.
 - CI on GitHub Actions: Rust checks on Linux, full build on macOS.
 
-**Exit:** `./scripts/build-xcframework.sh && xcodebuild` from a clean checkout produces an app whose menu shows the core version.
+**Exit:** `./scripts/build-app.sh --run` from a clean checkout produces an app whose menu shows the core version.
 
 ### M1: discovery, TLS, pairing
 
@@ -243,7 +250,7 @@ Each milestone ends with something demonstrable on the real phone. Do not start 
 
 ## Open questions for the owner
 
-1. **License.** KDE Connect's apps are GPL. Code written independently against the protocol can carry any license; code copied or closely adapted from those apps cannot. Decide the license before reading their source closely, and get proper advice if this may become a commercial product.
+1. **License (needed before the repo goes public).** KDE Connect's apps are GPL. Code written independently against the protocol can carry any license; code copied or closely adapted from those apps cannot. Decide the license before reading their source closely, and get proper advice if this may become a commercial product.
 2. **OTP auto-copy** on by default, or opt-in behind the notification action?
 3. **Intel Macs:** build universal, or Apple silicon only?
 4. Is a fork of the Android app acceptable later if clipboard or OTP behaviour demands it?

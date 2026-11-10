@@ -8,10 +8,10 @@ Early work in progress. See [PLAN.md](PLAN.md) for the design and milestones.
 
 ## Build
 
-Needs Rust (via rustup), Xcode, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Needs Rust (via rustup) and the Xcode Command Line Tools (`xcode-select --install`). Full Xcode is not required.
 
 ```sh
-./scripts/build-xcframework.sh
-cd apple && xcodegen generate
-xcodebuild build -project Landline.xcodeproj -scheme Landline
+./scripts/build-app.sh --run
 ```
+
+This builds `build/Landline.app` and launches it. Look for the phone icon in the menu bar.

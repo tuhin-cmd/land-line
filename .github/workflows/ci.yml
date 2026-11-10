@@ -30,25 +30,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Build xcframework and Swift bindings
-        run: ./scripts/build-xcframework.sh
-      - name: Test the bridge
-        working-directory: apple/LandlineKit
-        run: swift test
       - name: Build the app
-        run: |
-          cd apple
-          xcodegen generate
-          xcodebuild build \
-            -project Landline.xcodeproj \
-            -scheme Landline \
-            -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData"
+        run: ./scripts/build-app.sh --release --universal
+      - name: Test the bridge
+        run: ./scripts/test-swift.sh
       - name: Check the app bundle
         run: |
-          app="$RUNNER_TEMP/DerivedData/Build/Products/Release/Landline.app"
-          lipo -archs "$app/Contents/MacOS/Landline"
+          app=build/Landline.app
+          test "$(lipo -archs "$app/Contents/MacOS/Landline")" = "x86_64 arm64"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app/Contents/Info.plist")" = true
           codesign --verify --strict "$app"

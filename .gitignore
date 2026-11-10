@@ -1,14 +1,10 @@
 /target
+/build
 .DS_Store
 
 # Outputs of scripts/build-xcframework.sh
-/apple/LandlineKit/LandlineFFI.xcframework
-/apple/LandlineKit/Sources/LandlineKit/Generated
-
-# Output of `xcodegen generate`
-/apple/Landline.xcodeproj
+/apple/LandlineFFI.xcframework
+/apple/Sources/LandlineKit/Generated
 
 .build
 .swiftpm
-DerivedData
-xcuserdata
