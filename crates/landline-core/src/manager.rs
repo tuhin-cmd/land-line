@@ -510,9 +510,11 @@ impl Manager {
         if self.running.is_none() {
             return;
         }
-        // The first attempt after launch can be refused while macOS is still
-        // looking the permission up, so one refusal is not yet a verdict.
-        if self.outbound_refusals >= 2 {
+        // One refusal is not a verdict: a paired phone that has gone to
+        // sleep fails the same way for a moment (seen as one "no route to
+        // host", then "host is down", then sends that leave normally),
+        // while a missing permission refuses every attempt.
+        if self.outbound_refusals >= 3 {
             self.set_network_status(NetworkStatus::Blocked);
         } else if let Some(status) = self.broadcast_status {
             self.set_network_status(status);
