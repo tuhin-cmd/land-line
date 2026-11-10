@@ -57,6 +57,16 @@ pub(crate) enum LinkError {
     Tls(String),
 }
 
+impl LinkError {
+    /// Whether the system refused to let us reach the device at all. A
+    /// device that is merely absent times out instead; an immediate "no
+    /// route to host" for an address on our own network is how macOS
+    /// reports a missing Local Network permission.
+    pub(crate) fn is_refused_by_system(&self) -> bool {
+        matches!(self, Self::Io(error) if error.kind() == io::ErrorKind::HostUnreachable)
+    }
+}
+
 /// What this side needs to know to authenticate a peer by device ID.
 pub(crate) trait TrustLookup: Send + Sync {
     /// The pinned certificate and last known protocol version of a paired

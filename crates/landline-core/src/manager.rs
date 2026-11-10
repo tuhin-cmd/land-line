@@ -67,6 +67,11 @@ pub(crate) enum Msg {
         device_id: String,
         command: plugins::Command,
     },
+    /// Whether an attempt to reach a device on the local network was
+    /// refused outright (`true`) or went out (`false`).
+    Outbound {
+        refused: bool,
+    },
     /// Offer this text to every usable device.
     Clipboard(String),
     SetDownloadDir(PathBuf),
@@ -181,6 +186,12 @@ pub(crate) struct Manager {
     next_link: u64,
     last_identity: HashMap<String, Instant>,
     network_status: Option<NetworkStatus>,
+    /// What the last broadcast said about the network.
+    broadcast_status: Option<NetworkStatus>,
+    /// The system refuses our connections to devices on the local network.
+    /// On macOS that is the Local Network permission; broadcasts still go
+    /// out and devices can still connect to us, so only this shows it.
+    outbound_refused: bool,
     download_dir: PathBuf,
     cache_dir: PathBuf,
 }
@@ -257,6 +268,8 @@ impl Manager {
             next_link: 0,
             last_identity: HashMap::new(),
             network_status: None,
+            broadcast_status: None,
+            outbound_refused: false,
         };
         // Paired devices are listed before anything connects.
         *manager
@@ -303,6 +316,10 @@ impl Manager {
                     }
                 }
                 Msg::SetDownloadDir(path) => self.download_dir = path,
+                Msg::Outbound { refused } => {
+                    self.outbound_refused = refused;
+                    self.update_network_status();
+                }
             }
         }
     }
@@ -380,6 +397,8 @@ impl Manager {
         }
         self.last_identity.clear();
         self.network_status = None;
+        self.broadcast_status = None;
+        self.outbound_refused = false;
         info!("core stopped");
         self.publish();
     }
@@ -453,14 +472,14 @@ impl Manager {
             .discovery
             .broadcast(&self.datagram(running.tcp_port))
             .await;
-        let status = if report.sent_any() {
+        self.broadcast_status = Some(if report.sent_any() {
             NetworkStatus::Ready
         } else if report.likely_local_network_denied() {
             NetworkStatus::Blocked
         } else {
             NetworkStatus::Offline
-        };
-        self.set_network_status(status);
+        });
+        self.update_network_status();
         self.announce_to_known().await;
     }
 
@@ -472,8 +491,25 @@ impl Manager {
             .discovery
             .send_to(&self.datagram(running.tcp_port), address)
             .await;
-        if !report.sent_any() {
+        if report.sent_any() {
+            self.outbound_refused = false;
+        } else {
             debug!(%address, "could not send our identity");
+            // A datagram to an absent host still leaves; only a refusal by
+            // the system fails at once.
+            self.outbound_refused = report.likely_local_network_denied();
+        }
+        self.update_network_status();
+    }
+
+    fn update_network_status(&mut self) {
+        if self.running.is_none() {
+            return;
+        }
+        if self.outbound_refused {
+            self.set_network_status(NetworkStatus::Blocked);
+        } else if let Some(status) = self.broadcast_status {
+            self.set_network_status(status);
         }
     }
 
@@ -537,9 +573,15 @@ impl Manager {
             let link = link::connect(&shared.local, &shared.identity, &*shared, &peer, address);
             match link.await {
                 Ok(link) => {
+                    let _ = shared.tx.send(Msg::Outbound { refused: false });
                     let _ = shared.tx.send(Msg::LinkUp(Box::new(link)));
                 }
-                Err(error) => debug!(%address, %error, "could not connect to a device"),
+                Err(error) => {
+                    debug!(%address, %error, "could not connect to a device");
+                    if error.is_refused_by_system() {
+                        let _ = shared.tx.send(Msg::Outbound { refused: true });
+                    }
+                }
             }
         });
     }

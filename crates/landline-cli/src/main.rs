@@ -604,8 +604,10 @@ fn explain_network(status: NetworkStatus) {
         NetworkStatus::Ready => {}
         NetworkStatus::Offline => eprintln!("landline: no usable network interface or port"),
         NetworkStatus::Blocked => eprintln!(
-            "landline: every send was refused. Allow this terminal under System Settings > \
-             Privacy & Security > Local Network."
+            "landline: macOS is refusing connections to devices on the local network. Allow the \
+             app this runs in (your terminal) under System Settings > Privacy & Security > \
+             Local Network. Devices can still connect to this Mac, but files, storage and \
+             reconnecting will not work."
         ),
     }
 }

@@ -407,7 +407,16 @@ fn fail_waiters(state: &Mutex<State>, error: &CoreError) {
 }
 
 fn storage_error(error: &SftpError) -> CoreError {
-    CoreError::Storage(error.to_string())
+    let mut message = error.to_string();
+    // The phone connected to us, so it is on the network; if we cannot
+    // connect back, the system is refusing, not the phone.
+    if message.contains("No route to host") {
+        message.push_str(
+            ". macOS may be blocking this app from the local network: allow it under System \
+             Settings > Privacy & Security > Local Network.",
+        );
+    }
+    CoreError::Storage(message)
 }
 
 /// `CoreError` holds an `io::Error` in one variant and so is not `Clone`;
