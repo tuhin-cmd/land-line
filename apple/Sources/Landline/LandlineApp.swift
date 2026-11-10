@@ -6,7 +6,11 @@ struct LandlineApp: App {
     @State private var model: AppModel
 
     init() {
-        let model = AppModel(mode: LaunchMode(arguments: CommandLine.arguments))
+        let mode = LaunchMode(arguments: CommandLine.arguments)
+        if mode != .live, let appearance = DemoAppearance(arguments: CommandLine.arguments) {
+            NSApplication.shared.appearance = appearance.nsAppearance
+        }
+        let model = AppModel(mode: mode)
         // Started here rather than when the panel first opens: the phone
         // should be able to find the Mac as soon as the app is running.
         model.start()
@@ -36,3 +40,17 @@ struct LandlineApp: App {
     }
 }
 
+/// `--appearance=light` or `--appearance=dark` in demo mode, to look at the
+/// app in either without changing the whole system's appearance.
+enum DemoAppearance: String {
+    case light, dark
+
+    init?(arguments: [String]) {
+        guard let argument = arguments.first(where: { $0.hasPrefix("--appearance=") }) else { return nil }
+        self.init(rawValue: String(argument.dropFirst("--appearance=".count)))
+    }
+
+    var nsAppearance: NSAppearance? {
+        NSAppearance(named: self == .dark ? .darkAqua : .aqua)
+    }
+}
