@@ -13,6 +13,12 @@ import Testing
         #expect(settings.syncClipboard)
         #expect(settings.mutedApps.isEmpty)
         #expect(settings.downloadDir == nil)
+        #expect(!settings.openLinksAutomatically)
+    }
+
+    @Test func openingLinksAutomaticallyIsRemembered() {
+        AppSettings(defaults: store.defaults).openLinksAutomatically = true
+        #expect(AppSettings(defaults: store.defaults).openLinksAutomatically)
     }
 
     @Test func choicesSurviveARelaunch() {

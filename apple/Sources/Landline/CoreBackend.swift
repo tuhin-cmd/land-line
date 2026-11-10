@@ -72,6 +72,30 @@ final class CoreBackend: DeviceBackend {
 
     func setDownloadDir(_ path: String) { core.setDownloadDir(path: path) }
 
+    func sendFiles(_ paths: [String], to deviceId: String) throws {
+        try core.sendFiles(deviceId: deviceId, paths: paths)
+    }
+
+    func cancelTransfer(_ transferId: UInt64, on deviceId: String) throws {
+        try core.cancelTransfer(deviceId: deviceId, transferId: transferId)
+    }
+
+    func storageRoots(of deviceId: String) async throws -> [StorageRoot] {
+        try await core.storageRoots(deviceId: deviceId)
+    }
+
+    func listDir(_ path: String, on deviceId: String) async throws -> [RemoteEntry] {
+        try await core.listDir(deviceId: deviceId, path: path)
+    }
+
+    func download(_ remote: String, to local: String, from deviceId: String) async throws {
+        try await core.download(deviceId: deviceId, remote: remote, local: local)
+    }
+
+    func upload(_ local: String, to remote: String, on deviceId: String) async throws {
+        try await core.upload(deviceId: deviceId, local: local, remote: remote)
+    }
+
     /// The core's identity lives here, shared with `landline-cli` so both
     /// appear to the phone as the same device.
     static func defaultConfig(downloadDir: String?) throws -> CoreConfig {

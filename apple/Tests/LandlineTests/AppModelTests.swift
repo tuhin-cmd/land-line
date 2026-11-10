@@ -29,6 +29,31 @@ final class FakeBackend: DeviceBackend {
 
     func sendClipboard(_ text: String) { clipboardSent.append(text) }
     func setDownloadDir(_ path: String) { downloadDirs.append(path) }
+
+    var filesSent: [([String], String)] = []
+    var cancelled: [UInt64] = []
+    /// Plays the core during a storage call, such as reporting a transfer.
+    var onStorageCall: (@MainActor (String) -> Void)?
+
+    func sendFiles(_ paths: [String], to deviceId: String) throws {
+        if let failure { throw failure }
+        filesSent.append((paths, deviceId))
+    }
+
+    func cancelTransfer(_ transferId: UInt64, on deviceId: String) throws { cancelled.append(transferId) }
+
+    func storageRoots(of deviceId: String) async throws -> [StorageRoot] { [] }
+    func listDir(_ path: String, on deviceId: String) async throws -> [RemoteEntry] { [] }
+
+    func download(_ remote: String, to local: String, from deviceId: String) async throws {
+        onStorageCall?(local)
+        if let failure { throw failure }
+    }
+
+    func upload(_ local: String, to remote: String, on deviceId: String) async throws {
+        onStorageCall?(local)
+        if let failure { throw failure }
+    }
 }
 
 @MainActor @Suite struct AppModelTests {

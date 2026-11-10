@@ -31,10 +31,8 @@ final class AppModel {
     private(set) var loginItemState: LoginItemState
     /// Why the last launch-at-login change failed, until the next attempt.
     private(set) var loginItemError: String?
-    /// File transfers by ID. Kept for the transfer UI, which is not built yet.
-    private(set) var transfers: [UInt64: Transfer] = [:]
-    /// Text and links the phone shared, oldest first. Kept for the same UI.
-    private(set) var sharedItems: [SharedItem] = []
+    /// Running transfers, and ended ones until they expire.
+    private(set) var transferList = TransferList()
     /// The name the phone sees for this Mac.
     let macName: String
     let isDemo: Bool
@@ -46,6 +44,18 @@ final class AppModel {
     @ObservationIgnored private var flashTokens: [FlashKey: UUID] = [:]
     @ObservationIgnored private let notificationCenter: any NotificationCenterClient
     @ObservationIgnored private let loginItem: any LoginItem
+    @ObservationIgnored let workspace: any Workspace
+    @ObservationIgnored let defaultDownloadDir: String
+    /// Origins of transfers the core has reported, by ID.
+    @ObservationIgnored private var origins: [UInt64: TransferOrigin] = [:]
+    /// Storage calls whose transfer has not been reported yet.
+    @ObservationIgnored private var expectedTransfers: [ExpectedTransfer] = []
+    @ObservationIgnored private var batcher = ReceivedBatcher()
+    @ObservationIgnored private var batchCheck: Task<Void, Never>?
+    @ObservationIgnored private var expiryCheck: Task<Void, Never>?
+    @ObservationIgnored private var bannerSerial = 0
+    /// Open storage browser windows, by device.
+    @ObservationIgnored private var browsers: [String: StorageBrowserModel] = [:]
     @ObservationIgnored private var clipboard: ClipboardSync!
     /// Codes reported lately, to recognise the phone notification that
     /// carries the same code.
@@ -66,7 +76,7 @@ final class AppModel {
         switch mode {
         case .live:
             let services = AppServices.live()
-            let downloadDir = services.settings.downloadDir
+            let downloadDir = services.settings.downloadDir ?? services.defaultDownloadDir
             self.init(
                 macName: CoreBackend.computerName(), isDemo: false, services: services,
                 clearsBannersAtStart: true
@@ -96,6 +106,8 @@ final class AppModel {
         settings = services.settings
         notificationCenter = services.notificationCenter
         loginItem = services.loginItem
+        workspace = services.workspace
+        defaultDownloadDir = services.defaultDownloadDir
         loginItemState = services.loginItem.state
         self.clearsBannersAtStart = clearsBannersAtStart
         makeBackend = backend
@@ -172,11 +184,11 @@ final class AppModel {
             clipboard.receive(text)
             flash(deviceId, in: \.recentClipboard, for: Self.pingDisplayTime)
         case .transferUpdated(let transfer):
-            transfers[transfer.id] = transfer
+            transferUpdated(transfer)
         case .textShared(let deviceId, let text):
-            sharedItems.append(SharedItem(deviceId: deviceId, kind: .text, value: text))
+            textShared(text, from: deviceId)
         case .urlShared(let deviceId, let url):
-            sharedItems.append(SharedItem(deviceId: deviceId, kind: .url, value: url))
+            urlShared(url, from: deviceId)
         }
     }
 
@@ -191,6 +203,10 @@ final class AppModel {
         }
         let newlyConnected = !connected.subtracting(connectedIds).isEmpty
         connectedIds = connected
+        for (deviceId, browser) in browsers {
+            if let name = name(of: deviceId) { browser.deviceName = name }
+            browser.setConnected(connected.contains(deviceId))
+        }
         updateClipboardPolling()
         if newlyConnected {
             // The first connected phone is when banners start to matter, so
@@ -342,7 +358,29 @@ final class AppModel {
             if let appName = info[BannerInfo.appName] { mute(appName) }
         case .copyCode:
             if let code = info[BannerInfo.code] { copyCode(code) }
+        case .showInFinder:
+            workspace.reveal(Self.existingFiles(info[BannerInfo.paths]))
+        case .openFile:
+            for url in Self.existingFiles(info[BannerInfo.paths]) { workspace.open(url) }
+        case .openLink:
+            if let link = info[BannerInfo.url].flatMap(SharedLink.openable) { workspace.open(link) }
         }
+        // Clicking the banner itself does the obvious thing for files and
+        // links; other banners just close.
+        if response.action == .opened {
+            if info[BannerInfo.paths] != nil {
+                workspace.reveal(Self.existingFiles(info[BannerInfo.paths]))
+            } else if let link = info[BannerInfo.url].flatMap(SharedLink.openable) {
+                workspace.open(link)
+            }
+        }
+    }
+
+    /// Files named in a banner that are still there; the user may have
+    /// moved them since.
+    private static func existingFiles(_ paths: String?) -> [URL] {
+        (paths ?? "").split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     func refreshNotificationPermission() async {
@@ -424,12 +462,12 @@ final class AppModel {
     /// `nil` goes back to Downloads.
     func setDownloadDir(_ path: String?) {
         settings.downloadDir = path
-        backend?.setDownloadDir(path ?? Self.defaultDownloadDir)
+        backend?.setDownloadDir(path ?? defaultDownloadDir)
     }
 
-    static var defaultDownloadDir: String {
-        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
-            ?? NSHomeDirectory() + "/Downloads"
+    /// Where received files go, and where the storage browser downloads to.
+    var downloadFolder: URL {
+        URL(fileURLWithPath: settings.downloadDir ?? defaultDownloadDir, isDirectory: true)
     }
 
     func setLaunchAtLogin(_ on: Bool) {
@@ -477,8 +515,286 @@ final class AppModel {
 
     /// UniFFI errors describe themselves as `Startup(message: "...")`; the
     /// message is what a person should read.
-    static func describe(_ error: any Error) -> String {
+    nonisolated static func describe(_ error: any Error) -> String {
         if case LandlineError.Startup(let message) = error { return message }
         return String(describing: error)
+    }
+}
+
+// MARK: - Logs
+
+extension AppModel {
+    func logReport(date: Date = .now) -> String {
+        LogReport.make(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev",
+            coreVersion: coreVersion(),
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            state: reportState,
+            logs: LogReport.read([LogFiles.previous, LogFiles.current]),
+            date: date)
+    }
+
+    /// The app's state for a log export, with nothing that identifies the
+    /// user, their devices or their folders.
+    var reportState: [(String, String)] {
+        func onOff(_ on: Bool) -> String { on ? "on" : "off" }
+        let paired = devices.filter { $0.pairState == .paired }
+        return [
+            ("Mode", isDemo ? "demo" : "live"),
+            ("Network", networkStatus.map { "\($0)" } ?? "unknown"),
+            ("Paired devices", "\(paired.count), \(paired.filter(\.reachable).count) connected"),
+            ("Other devices nearby", "\(devices.count - paired.count)"),
+            ("Mac notifications", notificationPermission.map { "\($0)" } ?? "unknown"),
+            ("Open at login", "\(loginItemState)"),
+            ("Show phone notifications", onOff(settings.showNotifications)),
+            ("Copy codes automatically", onOff(settings.copyCodesAutomatically)),
+            ("Sync clipboard", onOff(settings.syncClipboard)),
+            ("Open links automatically", onOff(settings.openLinksAutomatically)),
+            ("Received files folder", settings.downloadDir == nil ? "Downloads" : "custom"),
+            ("Muted apps", "\(settings.mutedApps.count)"),
+        ]
+    }
+
+    func showLogsInFinder() {
+        let existing = [LogFiles.current, LogFiles.previous].filter { FileManager.default.fileExists(atPath: $0.path) }
+        if existing.isEmpty {
+            workspace.open(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs"))
+        } else {
+            workspace.reveal(existing)
+        }
+    }
+}
+
+// MARK: - Files
+
+/// A storage call waiting for the core to report its transfer. The core
+/// gives storage calls no transfer ID, so the first matching report is
+/// taken to be theirs.
+private struct ExpectedTransfer {
+    let deviceId: String
+    let direction: TransferDirection
+    let fileName: String
+    let origin: TransferOrigin
+    let token: UUID
+    let onMatch: @MainActor (UInt64) -> Void
+
+    func matches(_ transfer: Transfer) -> Bool {
+        transfer.deviceId == deviceId && transfer.direction == direction && transfer.fileName == fileName
+    }
+}
+
+extension AppModel {
+    /// Transfers for the panel.
+    var listedTransfers: [TransferEntry] { transferList.listed }
+
+    func transfer(_ id: UInt64) -> TransferEntry? { transferList.entry(id) }
+
+    private func transferUpdated(_ transfer: Transfer) {
+        let origin = origins[transfer.id] ?? claimOrigin(for: transfer)
+        origins[transfer.id] = origin
+        let change = transferList.apply(transfer, origin: origin)
+        guard change == .ended else { return }
+        origins[transfer.id] = nil
+        scheduleExpiry()
+        guard origin == .shared else { return }
+        switch transfer.state {
+        case .finished(let path) where transfer.direction == .incoming:
+            batcher.add(ReceivedFile(name: transfer.fileName, path: path), from: transfer.deviceId, at: .now)
+        case .failed(let reason):
+            if transfer.direction == .incoming { batcher.touch(transfer.deviceId, at: .now) }
+            notificationCenter.show(.transferFailed(transfer, reason: reason, deviceName: name(of: transfer.deviceId)))
+        default:
+            break
+        }
+        scheduleBatchCheck()
+    }
+
+    private func claimOrigin(for transfer: Transfer) -> TransferOrigin {
+        guard let index = expectedTransfers.firstIndex(where: { $0.matches(transfer) }) else { return .shared }
+        let expected = expectedTransfers.remove(at: index)
+        expected.onMatch(transfer.id)
+        return expected.origin
+    }
+
+    /// Announces received files once their batch is complete.
+    private func scheduleBatchCheck() {
+        batchCheck?.cancel()
+        guard let next = batcher.nextCheck else { return }
+        batchCheck = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.05, next.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self else { return }
+            self.postDueBatches(now: .now)
+        }
+    }
+
+    /// Exposed for tests, which pass their own clock.
+    func postDueBatches(now: Date) {
+        for batch in batcher.takeDue(now: now, receiving: transferList.devicesReceiving) {
+            bannerSerial += 1
+            notificationCenter.show(.received(batch, deviceName: name(of: batch.deviceId), serial: bannerSerial))
+        }
+        if !batcher.isEmpty { scheduleBatchCheck() }
+    }
+
+    private func scheduleExpiry() {
+        expiryCheck?.cancel()
+        guard let next = transferList.nextExpiry else { return }
+        expiryCheck = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, next.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self else { return }
+            self.transferList.expire()
+            self.scheduleExpiry()
+        }
+    }
+
+    func clearEndedTransfers() {
+        transferList.clearEnded()
+    }
+
+    func cancelTransfer(_ entry: TransferEntry) {
+        guard entry.canCancel else { return }
+        do {
+            try backend?.cancelTransfer(entry.id, on: entry.transfer.deviceId)
+        } catch {
+            notice = Notice(title: "Couldn’t cancel \(entry.transfer.fileName)", message: Self.describe(error))
+        }
+    }
+
+    // MARK: Shared text and links
+
+    private func textShared(_ text: String, from deviceId: String) {
+        clipboard.receive(text)
+        bannerSerial += 1
+        notificationCenter.show(.sharedText(text, deviceId: deviceId, deviceName: name(of: deviceId), serial: bannerSerial))
+    }
+
+    private func urlShared(_ string: String, from deviceId: String) {
+        guard let url = SharedLink.openable(string) else {
+            // Not something to hand to the system; it is still the user's,
+            // so it goes on the clipboard like shared text.
+            textShared(string, from: deviceId)
+            return
+        }
+        let open = settings.openLinksAutomatically
+        if open { workspace.open(url) }
+        bannerSerial += 1
+        notificationCenter.show(
+            .sharedLink(url, deviceId: deviceId, deviceName: name(of: deviceId), opened: open, serial: bannerSerial))
+    }
+
+    // MARK: Sending
+
+    /// Paired devices that are connected now: the ones files can go to.
+    var sendableDevices: [Device] {
+        sections.mine.filter { RowState($0) == .connected }
+    }
+
+    /// Sends the files to the device. Folders are left out with a notice:
+    /// the protocol carries files only.
+    func sendFiles(_ urls: [URL], to deviceId: String) {
+        var folders: [String] = []
+        var files: [String] = []
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                folders.append(url.lastPathComponent)
+            } else {
+                files.append(url.path)
+            }
+        }
+        if !folders.isEmpty {
+            notice = .foldersNotSent(folders)
+        }
+        guard !files.isEmpty, let backend else { return }
+        do {
+            try backend.sendFiles(files, to: deviceId)
+        } catch LandlineError.UnknownDevice {
+            notice = .deviceGone(name(of: deviceId))
+        } catch {
+            notice = Notice(title: "Couldn’t send files", message: Self.describe(error))
+        }
+    }
+
+    // MARK: Storage
+
+    /// The browser for a device's window, made on first use.
+    func storageBrowser(for deviceId: String) -> StorageBrowserModel {
+        if let browser = browsers[deviceId] { return browser }
+        let browser = StorageBrowserModel(
+            deviceId: deviceId, deviceName: name(of: deviceId) ?? "Phone",
+            connected: connectedIds.contains(deviceId), service: self,
+            downloadFolder: { [weak self] in self?.downloadFolder ?? FileManager.default.temporaryDirectory },
+            reveal: { [weak self] urls in self?.workspace.reveal(urls) },
+            networkBlocked: { [weak self] in self?.networkStatus == .blocked },
+            cacheFolder: PreviewCache.folder(for: deviceId))
+        browsers[deviceId] = browser
+        return browser
+    }
+
+    /// The window closed.
+    func closeStorageBrowser(for deviceId: String) {
+        browsers.removeValue(forKey: deviceId)?.close()
+    }
+
+    /// Notes a storage call before making it, so its transfer is recognised
+    /// when reported, and forgets it a little after the call returns. Not at
+    /// once: the transfer's reports travel through the event stream and can
+    /// reach the model after the call itself has returned.
+    private func expectTransfer<T>(
+        _ deviceId: String, _ direction: TransferDirection, fileName: String, origin: TransferOrigin,
+        onTransfer: @escaping @MainActor (UInt64) -> Void, during call: () async throws -> T
+    ) async throws -> T {
+        let token = UUID()
+        expectedTransfers.append(ExpectedTransfer(
+            deviceId: deviceId, direction: direction, fileName: fileName, origin: origin, token: token,
+            onMatch: onTransfer))
+        defer {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                self?.expectedTransfers.removeAll { $0.token == token }
+            }
+        }
+        return try await call()
+    }
+
+    private var storageBackend: any DeviceBackend {
+        get throws {
+            guard let backend else { throw LandlineError.NotReachable }
+            return backend
+        }
+    }
+}
+
+extension AppModel: StorageService {
+    func storageRoots(of deviceId: String) async throws -> [StorageRoot] {
+        try await storageBackend.storageRoots(of: deviceId)
+    }
+
+    func listDir(_ path: String, on deviceId: String) async throws -> [RemoteEntry] {
+        try await storageBackend.listDir(path, on: deviceId)
+    }
+
+    func download(
+        _ remote: String, to local: URL, from deviceId: String, origin: TransferOrigin,
+        onTransfer: @escaping @MainActor (UInt64) -> Void
+    ) async throws {
+        let backend = try storageBackend
+        try await expectTransfer(
+            deviceId, .incoming, fileName: local.lastPathComponent, origin: origin, onTransfer: onTransfer
+        ) {
+            try await backend.download(remote, to: local.path, from: deviceId)
+        }
+    }
+
+    func upload(
+        _ local: URL, to remote: String, on deviceId: String, onTransfer: @escaping @MainActor (UInt64) -> Void
+    ) async throws {
+        let backend = try storageBackend
+        try await expectTransfer(
+            deviceId, .outgoing, fileName: local.lastPathComponent, origin: .storage, onTransfer: onTransfer
+        ) {
+            try await backend.upload(local.path, to: remote, on: deviceId)
+        }
     }
 }

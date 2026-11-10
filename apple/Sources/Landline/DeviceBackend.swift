@@ -13,6 +13,20 @@ protocol DeviceBackend: AnyObject {
     func sendClipboard(_ text: String)
     /// Where files from a device are saved from now on.
     func setDownloadDir(_ path: String)
+    /// Sends files, one after another. Progress arrives as `transferUpdated`.
+    func sendFiles(_ paths: [String], to deviceId: String) throws
+    /// Stops a shared file. Storage downloads and uploads cannot be stopped.
+    func cancelTransfer(_ transferId: UInt64, on deviceId: String) throws
+
+    // Storage. These run on the core's own threads; awaiting one does not
+    // block the main actor. Cancelling the awaiting task does not stop the
+    // work: the core finishes it regardless.
+    func storageRoots(of deviceId: String) async throws -> [StorageRoot]
+    func listDir(_ path: String, on deviceId: String) async throws -> [RemoteEntry]
+    /// Copies a file from the device. The core writes to a hidden temporary
+    /// file next to `local` and renames it, replacing anything there.
+    func download(_ remote: String, to local: String, from deviceId: String) async throws
+    func upload(_ local: String, to remote: String, on deviceId: String) async throws
 }
 
 enum CoreEvent: Sendable {
@@ -77,4 +91,12 @@ enum DemoScenario: String, CaseIterable, Sendable {
     /// The same script, but shown with real banners and written to the real
     /// pasteboard, to check the system side by hand.
     case system
+    /// A connected phone that shares files, text and a link, with transfers
+    /// in every state. Browse Files shows a made-up storage tree.
+    case files
+    /// Local Network permission missing while a phone is connected anyway:
+    /// the phone can reach the Mac, but not the other way round.
+    case blockedConnected = "blocked-connected"
+    /// Enough devices and notifications to need scrolling.
+    case crowded
 }

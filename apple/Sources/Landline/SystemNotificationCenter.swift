@@ -26,8 +26,20 @@ final class SystemNotificationCenter: NSObject, NotificationCenterClient {
         super.init()
         center.delegate = self
         let copy = UNNotificationAction(identifier: ActionId.copyCode, title: "Copy Code")
-        categories[BannerCategory.code.identifier] = UNNotificationCategory(
-            identifier: BannerCategory.code.identifier, actions: [copy], intentIdentifiers: [])
+        let reveal = UNNotificationAction(identifier: ActionId.showInFinder, title: "Show in Finder")
+        let openFile = UNNotificationAction(identifier: ActionId.openFile, title: "Open")
+        let openLink = UNNotificationAction(identifier: ActionId.openLink, title: "Open")
+        let fixed: [(BannerCategory, [UNNotificationAction])] = [
+            (.code, [copy]),
+            (.receivedFile, [reveal, openFile]),
+            (.receivedFiles, [reveal]),
+            (.link, [openLink]),
+            (.info, []),
+        ]
+        for (category, actions) in fixed {
+            categories[category.identifier] = UNNotificationCategory(
+                identifier: category.identifier, actions: actions, intentIdentifiers: [])
+        }
         center.setNotificationCategories(Set(categories.values))
     }
 
@@ -81,7 +93,7 @@ final class SystemNotificationCenter: NSObject, NotificationCenterClient {
         content.threadIdentifier = banner.threadId
         content.categoryIdentifier = banner.category.identifier
         content.userInfo = banner.userInfo
-        content.sound = .default
+        content.sound = banner.quiet ? nil : .default
         if let iconPath = banner.iconPath, let attachment = attachment(for: iconPath) {
             content.attachments = [attachment]
         }
@@ -140,6 +152,9 @@ final class SystemNotificationCenter: NSObject, NotificationCenterClient {
     fileprivate enum ActionId {
         static let copyCode = "copy-code"
         static let muteApp = "mute-app"
+        static let showInFinder = "show-in-finder"
+        static let openFile = "open-file"
+        static let openLink = "open-link"
     }
 }
 
@@ -160,6 +175,9 @@ extension SystemNotificationCenter: UNUserNotificationCenterDelegate {
         case UNNotificationDismissActionIdentifier: .dismissed
         case ActionId.copyCode: .copyCode
         case ActionId.muteApp: .muteApp
+        case ActionId.showInFinder: .showInFinder
+        case ActionId.openFile: .openFile
+        case ActionId.openLink: .openLink
         default: nil
         }
         guard let action else { return }

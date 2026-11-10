@@ -15,6 +15,9 @@ struct Banner: Equatable, Sendable {
     var userInfo: [String: String] = [:]
     /// A PNG to attach, such as the phone app's icon.
     var iconPath: String?
+    /// No sound: for news the user does not need to act on, such as a
+    /// failed transfer.
+    var quiet = false
 }
 
 /// Decides which actions a banner offers.
@@ -24,11 +27,23 @@ enum BannerCategory: Hashable, Sendable {
     case phoneNotification(appName: String)
     /// A one-time code. Offers "Copy Code".
     case code
+    /// One received file. Offers "Show in Finder" and "Open".
+    case receivedFile
+    /// Several received files. Offers "Show in Finder".
+    case receivedFiles
+    /// A link the phone shared. Offers "Open".
+    case link
+    /// Something to read, with no actions.
+    case info
 
     var identifier: String {
         switch self {
         case .phoneNotification(let appName): "phone/\(appName)"
         case .code: "code"
+        case .receivedFile: "received-file"
+        case .receivedFiles: "received-files"
+        case .link: "link"
+        case .info: "info"
         }
     }
 }
@@ -42,6 +57,9 @@ struct BannerResponse: Equatable, Sendable {
         case dismissed
         case muteApp
         case copyCode
+        case showInFinder
+        case openFile
+        case openLink
     }
 
     let action: Action
@@ -94,6 +112,9 @@ enum BannerInfo {
     static let appName = "app"
     static let dismissable = "dismissable"
     static let code = "code"
+    /// Received files, one path per line.
+    static let paths = "paths"
+    static let url = "url"
 }
 
 extension Banner {
@@ -142,6 +163,73 @@ extension Banner {
             threadId: "codes",
             category: .code,
             userInfo: [BannerInfo.deviceId: deviceId, BannerInfo.code: otp.code])
+    }
+}
+
+extension Banner {
+    /// Files that arrived from the phone. Clicking the banner shows them in
+    /// Finder.
+    static func received(_ batch: ReceivedBatch, deviceName: String?, serial: Int) -> Banner {
+        let device = deviceName ?? "your phone"
+        let names = batch.files.map(\.name)
+        let single = names.count == 1
+        let body: String
+        switch names.count {
+        case 1: body = "From \(device)"
+        case 2: body = "\(names[0]) and \(names[1]) from \(device)"
+        default: body = "\(names[0]), \(names[1]) and \(names.count - 2) more from \(device)"
+        }
+        return Banner(
+            id: "received/\(batch.deviceId)/\(serial)",
+            title: single ? "Received \(names[0])" : "Received \(names.count) files",
+            body: body,
+            threadId: "files/\(batch.deviceId)",
+            category: single ? .receivedFile : .receivedFiles,
+            userInfo: [
+                BannerInfo.deviceId: batch.deviceId,
+                BannerInfo.paths: batch.files.map(\.path).joined(separator: "\n"),
+            ])
+    }
+
+    /// A transfer that failed. Quiet, since nothing can be done from here
+    /// except trying again.
+    static func transferFailed(_ transfer: Transfer, reason: String, deviceName: String?) -> Banner {
+        let device = deviceName ?? "the phone"
+        let incoming = transfer.direction == .incoming
+        return Banner(
+            id: "transfer/\(transfer.deviceId)/\(transfer.id)",
+            title: incoming ? "Couldn’t receive \(transfer.fileName)" : "Couldn’t send \(transfer.fileName)",
+            body: reason.isEmpty ? (incoming ? "From \(device)" : "To \(device)") : reason,
+            threadId: "files/\(transfer.deviceId)",
+            category: .info,
+            userInfo: [BannerInfo.deviceId: transfer.deviceId],
+            quiet: true)
+    }
+
+    /// Text the phone shared, already on the clipboard. Shows the first line
+    /// so the user can tell which text it was.
+    static func sharedText(_ text: String, deviceId: String, deviceName: String?, serial: Int) -> Banner {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return Banner(
+            id: "shared/\(deviceId)/\(serial)",
+            title: "Copied text from \(deviceName ?? "your phone")",
+            body: trimmed.count > 120 ? String(trimmed.prefix(120)) + "…" : trimmed,
+            threadId: "shared/\(deviceId)",
+            category: .info,
+            userInfo: [BannerInfo.deviceId: deviceId])
+    }
+
+    /// A link the phone shared. `opened` says the app already opened it.
+    static func sharedLink(_ url: URL, deviceId: String, deviceName: String?, opened: Bool, serial: Int) -> Banner {
+        let device = deviceName ?? "your phone"
+        return Banner(
+            id: "shared/\(deviceId)/\(serial)",
+            title: opened ? "Opened a link from \(device)" : "Link from \(device)",
+            body: url.absoluteString,
+            threadId: "shared/\(deviceId)",
+            category: opened ? .info : .link,
+            userInfo: [BannerInfo.deviceId: deviceId, BannerInfo.url: url.absoluteString])
     }
 }
 

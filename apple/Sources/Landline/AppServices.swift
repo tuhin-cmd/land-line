@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import LandlineKit
 
 /// What the model uses from the OS, gathered so tests and demo mode can
@@ -9,6 +9,10 @@ struct AppServices {
     let notificationCenter: any NotificationCenterClient
     let pasteboard: any Pasteboard
     let loginItem: any LoginItem
+    let workspace: any Workspace
+    /// Where received and downloaded files go unless the user picked a
+    /// folder: Downloads, or a temporary folder in demo mode and tests.
+    let defaultDownloadDir: String
 
     static func live() -> AppServices {
         AppServices(
@@ -16,7 +20,10 @@ struct AppServices {
             notificationCenter: SystemNotificationCenter.isAvailable
                 ? SystemNotificationCenter() : InertNotificationCenter(permission: .denied),
             pasteboard: SystemPasteboard(),
-            loginItem: SystemLoginItem())
+            loginItem: SystemLoginItem(),
+            workspace: SystemWorkspace(),
+            defaultDownloadDir: FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
+                ?? NSHomeDirectory() + "/Downloads")
     }
 
     /// Demo settings live in their own suite so trying things in a demo
@@ -30,7 +37,58 @@ struct AppServices {
             settings: AppSettings(defaults: defaults),
             notificationCenter: real ? SystemNotificationCenter() : InertNotificationCenter(permission: .allowed),
             pasteboard: real ? SystemPasteboard() : MemoryPasteboard(),
-            loginItem: real ? SystemLoginItem() : MemoryLoginItem())
+            loginItem: real ? SystemLoginItem() : MemoryLoginItem(),
+            workspace: DemoWorkspace(opensLinks: real),
+            defaultDownloadDir: DemoFiles.receivedFolder.path)
+    }
+}
+
+/// Opening and revealing files and links, so tests and demo mode can see
+/// what would have opened without anything opening.
+@MainActor
+protocol Workspace: AnyObject {
+    /// Opens a file in its default app, or a link in the browser or mail.
+    func open(_ url: URL)
+    /// Selects the files in a Finder window.
+    func reveal(_ urls: [URL])
+}
+
+@MainActor
+final class SystemWorkspace: Workspace {
+    func open(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func reveal(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+}
+
+/// Demo files live in a temporary folder, so revealing and opening them is
+/// harmless and shows the feature working. Web links are only recorded,
+/// except in the `system` scenario.
+@MainActor
+final class DemoWorkspace: Workspace {
+    private let opensLinks: Bool
+    private(set) var openedLinks: [URL] = []
+
+    init(opensLinks: Bool) {
+        self.opensLinks = opensLinks
+    }
+
+    func open(_ url: URL) {
+        if url.isFileURL || opensLinks {
+            NSWorkspace.shared.open(url)
+        } else {
+            openedLinks.append(url)
+            Log.app.info("Demo: would open a shared link")
+        }
+    }
+
+    func reveal(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 }
 
@@ -60,11 +118,3 @@ struct ListedNotification: Identifiable, Equatable {
     var id: String { Banner.phoneId(deviceId: deviceId, notificationId: notification.id) }
 }
 
-/// Text or a link the phone shared.
-struct SharedItem: Equatable, Sendable {
-    enum Kind: Equatable, Sendable { case text, url }
-
-    let deviceId: String
-    let kind: Kind
-    let value: String
-}

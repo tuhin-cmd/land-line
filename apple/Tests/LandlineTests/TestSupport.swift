@@ -72,11 +72,76 @@ final class TestServices {
     let center = FakeNotificationCenter()
     let pasteboard = MemoryPasteboard()
     let loginItem = MemoryLoginItem()
+    let workspace = FakeWorkspace()
+    let folder = TemporaryFolder()
     lazy var settings = AppSettings(defaults: defaults.defaults)
 
     var services: AppServices {
-        AppServices(settings: settings, notificationCenter: center, pasteboard: pasteboard, loginItem: loginItem)
+        AppServices(
+            settings: settings, notificationCenter: center, pasteboard: pasteboard, loginItem: loginItem,
+            workspace: workspace, defaultDownloadDir: folder.url.path)
     }
+}
+
+/// Records what would have been opened or shown in Finder.
+@MainActor
+final class FakeWorkspace: Workspace {
+    private(set) var opened: [URL] = []
+    private(set) var revealed: [[URL]] = []
+
+    func open(_ url: URL) { opened.append(url) }
+    func reveal(_ urls: [URL]) { revealed.append(urls) }
+}
+
+/// A folder of its own under the temporary directory, deleted with the
+/// test, so no test writes to the user's folders.
+final class TemporaryFolder: @unchecked Sendable {
+    let url: URL
+
+    init() {
+        url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("landline-tests-\(UUID().uuidString)", isDirectory: true)
+            .resolvingSymlinksInPath()
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    @discardableResult
+    func file(_ name: String, contents: String = "x") -> URL {
+        let file = url.appendingPathComponent(name)
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: file.path, contents: Data(contents.utf8))
+        return file
+    }
+
+    @discardableResult
+    func folder(_ name: String) -> URL {
+        let folder = url.appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+}
+
+func transfer(
+    _ id: UInt64, device: String = "p", direction: TransferDirection = .incoming, done: UInt64 = 0,
+    total: UInt64? = 100, _ state: TransferState = .inProgress
+) -> Transfer {
+    transfer(id, "a.jpg", device: device, direction: direction, done: done, total: total, state)
+}
+
+func transfer(
+    _ id: UInt64, _ name: String, device: String = "p", direction: TransferDirection = .incoming,
+    done: UInt64 = 0, total: UInt64? = 100, _ state: TransferState = .inProgress
+) -> Transfer {
+    Transfer(id: id, deviceId: device, fileName: name, direction: direction, bytesDone: done, bytesTotal: total, state: state)
+}
+
+func entry(_ path: String, dir: Bool = false, size: UInt64 = 10, modified: Int64? = nil) -> RemoteEntry {
+    RemoteEntry(
+        name: (path as NSString).lastPathComponent, path: path, isDir: dir, size: size, modifiedSecs: modified)
 }
 
 func phoneNotification(

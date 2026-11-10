@@ -26,6 +26,12 @@ final class AppSettings {
     var downloadDir: String? {
         didSet { defaults.set(downloadDir, forKey: Key.downloadDir) }
     }
+    /// Open web and mail links the phone shares as soon as they arrive.
+    /// Off by default: a link opening by itself is surprising, and the
+    /// notification's Open button is one click.
+    var openLinksAutomatically: Bool {
+        didSet { defaults.set(openLinksAutomatically, forKey: Key.openLinks) }
+    }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -38,6 +44,7 @@ final class AppSettings {
         syncClipboard = defaults.object(forKey: Key.syncClipboard) as? Bool ?? true
         mutedApps = (defaults.stringArray(forKey: Key.mutedApps) ?? []).sorted(by: Self.finderOrder)
         downloadDir = defaults.string(forKey: Key.downloadDir)
+        openLinksAutomatically = defaults.object(forKey: Key.openLinks) as? Bool ?? false
     }
 
     func isMuted(_ appName: String) -> Bool {
@@ -63,5 +70,6 @@ final class AppSettings {
         static let syncClipboard = "syncClipboard"
         static let mutedApps = "mutedApps"
         static let downloadDir = "downloadDir"
+        static let openLinks = "openLinksAutomatically"
     }
 }

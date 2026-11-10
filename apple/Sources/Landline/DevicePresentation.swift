@@ -40,6 +40,8 @@ struct DeviceRowContent: Equatable {
     let keyGroups: [String]?
     /// Only while connected; an offline phone's last charge would mislead.
     let battery: BatteryBadge?
+    /// Paired and connected: files can be sent and storage browsed.
+    var canTransferFiles: Bool { state == .connected }
 
     init(_ device: Device, pingReceived: Bool = false) {
         let state = RowState(device)
@@ -193,6 +195,13 @@ struct Notice: Equatable {
                 message: "Check that it’s on the same Wi-Fi network as this Mac, then try again."
             )
         }
+    }
+
+    static func foldersNotSent(_ names: [String]) -> Notice {
+        Notice(
+            title: names.count == 1 ? "“\(names[0])” wasn’t sent" : "\(names.count) folders weren’t sent",
+            message: "Only files can be sent to a phone. Send the files inside, or compress the folder first."
+        )
     }
 
     static func deviceGone(_ deviceName: String?) -> Notice {

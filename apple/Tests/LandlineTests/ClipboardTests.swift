@@ -178,7 +178,7 @@ import Testing
         #expect(backend.downloadDirs == ["/Users/test/Phone"])
         #expect(services.settings.downloadDir == "/Users/test/Phone")
         model.setDownloadDir(nil)
-        #expect(backend.downloadDirs.last == AppModel.defaultDownloadDir)
+        #expect(backend.downloadDirs.last == model.defaultDownloadDir)
         #expect(services.settings.downloadDir == nil)
     }
 
@@ -213,7 +213,7 @@ import Testing
         let services = TestServices()
         let custom = AppServices(
             settings: services.settings, notificationCenter: services.center, pasteboard: services.pasteboard,
-            loginItem: Ignoring())
+            loginItem: Ignoring(), workspace: services.workspace, defaultDownloadDir: services.folder.url.path)
         let model = AppModel(services: custom) { [backend] in backend }
         model.setLaunchAtLogin(true)
         #expect(model.loginItemError != nil)
@@ -221,15 +221,14 @@ import Testing
         #expect(model.loginItemError == nil)
     }
 
-    @Test func sharedItemsAndTransfersAreKeptForLater() {
+    @Test func sharedTextAndTransfersReachTheModel() {
         let model = model()
         model.handle(.textShared(deviceId: "p", text: "hi"))
-        model.handle(.urlShared(deviceId: "p", url: "https://example.com"))
         let transfer = Transfer(
             id: 1, deviceId: "p", fileName: "a.jpg", direction: .incoming, bytesDone: 10, bytesTotal: 100,
             state: .inProgress)
         model.handle(.transferUpdated(transfer))
-        #expect(model.sharedItems.map(\.kind) == [.text, .url])
-        #expect(model.transfers[1] == transfer)
+        #expect(services.pasteboard.string() == "hi")
+        #expect(model.transfer(1)?.transfer == transfer)
     }
 }
