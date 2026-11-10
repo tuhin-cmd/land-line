@@ -3,18 +3,22 @@ import LandlineKit
 
 @testable import Landline
 
-/// A `UserDefaults` suite of its own, deleted when the test lets go of it,
-/// so no test reads or writes the real app's settings.
+/// A `UserDefaults` suite of its own, so no test reads or writes the real
+/// app's settings. A suite named by an absolute path is stored at that path,
+/// which keeps it in a temporary folder deleted with the test, rather than
+/// leaving a file per test in ~/Library/Preferences.
 final class TestDefaults {
-    let name = "io.github.tuhin-cmd.landline.tests.\(UUID().uuidString)"
+    private let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("landline-tests-\(UUID().uuidString)", isDirectory: true)
     let defaults: UserDefaults
 
     init() {
-        defaults = UserDefaults(suiteName: name)!
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defaults = UserDefaults(suiteName: directory.appendingPathComponent("settings").path)!
     }
 
     deinit {
-        defaults.removePersistentDomain(forName: name)
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
