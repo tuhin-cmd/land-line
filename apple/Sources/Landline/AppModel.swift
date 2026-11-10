@@ -46,8 +46,6 @@ final class AppModel {
     @ObservationIgnored private let loginItem: any LoginItem
     @ObservationIgnored let workspace: any Workspace
     @ObservationIgnored let defaultDownloadDir: String
-    /// Origins of transfers the core has reported, by ID.
-    @ObservationIgnored private var origins: [UInt64: TransferOrigin] = [:]
     /// Storage calls whose transfer has not been reported yet.
     @ObservationIgnored private var expectedTransfers: [ExpectedTransfer] = []
     @ObservationIgnored private var batcher = ReceivedBatcher()
@@ -590,11 +588,10 @@ extension AppModel {
     func transfer(_ id: UInt64) -> TransferEntry? { transferList.entry(id) }
 
     private func transferUpdated(_ transfer: Transfer) {
-        let origin = origins[transfer.id] ?? claimOrigin(for: transfer)
-        origins[transfer.id] = origin
+        // Only a transfer seen for the first time can be a storage call's.
+        let origin = transferList.entry(transfer.id)?.origin ?? claimOrigin(for: transfer)
         let change = transferList.apply(transfer, origin: origin)
         guard change == .ended else { return }
-        origins[transfer.id] = nil
         scheduleExpiry()
         guard origin == .shared else { return }
         switch transfer.state {

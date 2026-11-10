@@ -14,6 +14,11 @@ struct LandlineApp: App {
         if mode == .live {
             LogFiles.start()
         }
+        if mode != .live {
+            PreviewCache.root = DemoFiles.root.appendingPathComponent("Preview", isDirectory: true)
+            // Files from an earlier demo would make every name a "2".
+            DemoFiles.clean()
+        }
         // Previews from a run that ended without closing its windows.
         PreviewCache.clean()
         let model = AppModel(mode: mode)

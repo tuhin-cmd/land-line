@@ -696,8 +696,11 @@ final class StorageBrowserModel {
 }
 
 /// The browser's temporary copies for Quick Look, one folder per window.
+@MainActor
 enum PreviewCache {
-    static let root = FileManager.default.temporaryDirectory
+    /// Demo mode keeps its own, so a demo started next to the real app
+    /// never deletes the real app's previews.
+    static var root = FileManager.default.temporaryDirectory
         .appendingPathComponent("io.github.tuhin-cmd.landline.preview", isDirectory: true)
 
     static func folder(for deviceId: String) -> URL {

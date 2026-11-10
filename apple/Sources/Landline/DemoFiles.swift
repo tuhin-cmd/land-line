@@ -8,6 +8,10 @@ enum DemoFiles {
         .appendingPathComponent("io.github.tuhin-cmd.landline.demo", isDirectory: true)
     static let receivedFolder = root.appendingPathComponent("Received", isDirectory: true)
 
+    static func clean() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
     /// True if writing to `url` keeps the demo inside its temporary folder.
     static func isWritable(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.resolvingSymlinksInPath().path
