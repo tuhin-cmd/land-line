@@ -188,10 +188,11 @@ pub(crate) struct Manager {
     network_status: Option<NetworkStatus>,
     /// What the last broadcast said about the network.
     broadcast_status: Option<NetworkStatus>,
-    /// The system refuses our connections to devices on the local network.
-    /// On macOS that is the Local Network permission; broadcasts still go
-    /// out and devices can still connect to us, so only this shows it.
-    outbound_refused: bool,
+    /// How many attempts in a row to reach a device on the local network
+    /// the system has refused outright. On macOS that is the Local Network
+    /// permission; broadcasts still go out and devices can still connect to
+    /// us, so only this shows it.
+    outbound_refusals: u32,
     download_dir: PathBuf,
     cache_dir: PathBuf,
 }
@@ -269,7 +270,7 @@ impl Manager {
             last_identity: HashMap::new(),
             network_status: None,
             broadcast_status: None,
-            outbound_refused: false,
+            outbound_refusals: 0,
         };
         // Paired devices are listed before anything connects.
         *manager
@@ -316,10 +317,7 @@ impl Manager {
                     }
                 }
                 Msg::SetDownloadDir(path) => self.download_dir = path,
-                Msg::Outbound { refused } => {
-                    self.outbound_refused = refused;
-                    self.update_network_status();
-                }
+                Msg::Outbound { refused } => self.outbound_result(refused),
             }
         }
     }
@@ -398,7 +396,7 @@ impl Manager {
         self.last_identity.clear();
         self.network_status = None;
         self.broadcast_status = None;
-        self.outbound_refused = false;
+        self.outbound_refusals = 0;
         info!("core stopped");
         self.publish();
     }
@@ -491,14 +489,20 @@ impl Manager {
             .discovery
             .send_to(&self.datagram(running.tcp_port), address)
             .await;
-        if report.sent_any() {
-            self.outbound_refused = false;
-        } else {
+        if !report.sent_any() {
             debug!(%address, "could not send our identity");
-            // A datagram to an absent host still leaves; only a refusal by
-            // the system fails at once.
-            self.outbound_refused = report.likely_local_network_denied();
         }
+        // A datagram to an absent host still leaves, or fails as "host is
+        // down"; only a refusal by the system fails as "no route".
+        self.outbound_result(!report.sent_any() && report.likely_local_network_denied());
+    }
+
+    fn outbound_result(&mut self, refused: bool) {
+        self.outbound_refusals = if refused {
+            self.outbound_refusals.saturating_add(1)
+        } else {
+            0
+        };
         self.update_network_status();
     }
 
@@ -506,7 +510,9 @@ impl Manager {
         if self.running.is_none() {
             return;
         }
-        if self.outbound_refused {
+        // The first attempt after launch can be refused while macOS is still
+        // looking the permission up, so one refusal is not yet a verdict.
+        if self.outbound_refusals >= 2 {
             self.set_network_status(NetworkStatus::Blocked);
         } else if let Some(status) = self.broadcast_status {
             self.set_network_status(status);
