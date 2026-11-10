@@ -1,5 +1,6 @@
 import LandlineKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The round device glyph used by the system's Bluetooth panel: filled with
 /// the accent colour when connected, grey otherwise.
@@ -22,7 +23,9 @@ struct DeviceIcon: View {
 struct DeviceRowView: View {
     let device: Device
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var hovering = false
+    @State private var dropTargeted = false
 
     private var content: DeviceRowContent {
         DeviceRowContent(device, pingReceived: model.recentPings.contains(device.id))
@@ -50,9 +53,23 @@ struct DeviceRowView: View {
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
             .background(
-                hovering ? AnyShapeStyle(.quinary) : AnyShapeStyle(.clear),
+                hovering || dropTargeted ? AnyShapeStyle(.quinary) : AnyShapeStyle(.clear),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                }
+            }
             .onHover { hovering = $0 }
+            .onDrop(of: [.fileURL], isTargeted: content.canTransferFiles ? $dropTargeted : .constant(false)) { providers in
+                guard content.canTransferFiles else { return false }
+                Task {
+                    let urls = await FileDrop.urls(from: providers)
+                    model.sendFiles(urls, to: device.id)
+                }
+                return true
+            }
 
             if content.state == .waitingForPeer {
                 OutgoingPairingCard(device: device) { model.perform(.cancel, on: device.id) }
@@ -76,7 +93,7 @@ struct DeviceRowView: View {
                 Image(systemName: "doc.on.clipboard.fill")
                     .foregroundStyle(Color.accentColor)
             }
-            Text(clipboard ? "Clipboard received" : content.status)
+            Text(dropTargeted ? "Drop to send" : clipboard ? "Clipboard received" : content.status)
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
@@ -114,6 +131,11 @@ struct DeviceRowView: View {
             }
             if content.actions.contains(.unpair) {
                 Menu {
+                    if content.canTransferFiles {
+                        Button("Send File…") { FilePanels.chooseFilesToSend(to: device, model: model) }
+                        Button("Browse Files…") { openBrowser() }
+                        Divider()
+                    }
                     Button("Unpair…") { model.perform(.unpair, on: device.id) }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -126,6 +148,12 @@ struct DeviceRowView: View {
             }
         }
         .foregroundStyle(.secondary)
+    }
+
+    private func openBrowser() {
+        BrowserWindows.show(device.id) {
+            openWindow(id: StorageBrowserWindow.id, value: device.id)
+        }
     }
 
     /// Inline rather than an alert: an alert on a menu bar panel can close
