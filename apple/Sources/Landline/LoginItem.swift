@@ -6,9 +6,6 @@ enum LoginItemState: Equatable, Sendable {
     case disabled
     /// Registered, but the user has to allow it in System Settings.
     case needsApproval
-    /// macOS does not know this copy of the app as something that can open
-    /// at login.
-    case unavailable
 }
 
 @MainActor
@@ -23,10 +20,12 @@ final class SystemLoginItem: LoginItem {
     var state: LoginItemState {
         switch SMAppService.mainApp.status {
         case .enabled: .enabled
-        case .notRegistered: .disabled
         case .requiresApproval: .needsApproval
-        case .notFound: .unavailable
-        @unknown default: .unavailable
+        // `notFound` is also what an app that was never registered reports
+        // (seen with an ad-hoc signed build in the build folder), so it
+        // reads as off; a real failure shows when registering throws.
+        case .notRegistered, .notFound: .disabled
+        @unknown default: .disabled
         }
     }
 
@@ -66,15 +65,14 @@ extension LoginItemState {
         case .enabled, .disabled: nil
         case .needsApproval:
             "Waiting for your approval. Turn on Landline in System Settings > General > Login Items."
-        case .unavailable:
-            "macOS can’t open this copy of Landline at login. Move Landline to the Applications folder and open it from there."
         }
     }
 
     /// What to say when turning it on or off failed. Development builds are
-    /// signed ad hoc and run from the build folder, which macOS often refuses.
-    static func failureMessage(enabling: Bool, error: any Error) -> String {
+    /// signed ad hoc and run from the build folder, which macOS may refuse.
+    static func failureMessage(enabling: Bool, error: (any Error)?) -> String {
         let action = enabling ? "turn on" : "turn off"
-        return "macOS didn’t let Landline \(action) opening at login (\(error.localizedDescription)). This is expected for a development build run from the build folder; a signed copy in Applications can do it."
+        let reason = error.map { " (\($0.localizedDescription))" } ?? ""
+        return "macOS didn’t let Landline \(action) opening at login\(reason). Development builds run from the build folder can be refused; a signed copy in Applications should work."
     }
 }

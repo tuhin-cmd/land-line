@@ -440,6 +440,11 @@ final class AppModel {
             loginItemError = LoginItemState.failureMessage(enabling: on, error: error)
         }
         loginItemState = loginItem.state
+        // Registering can succeed without the app being listed; say so
+        // rather than leaving a switch that flips back without a word.
+        if loginItemError == nil, on, loginItemState == .disabled {
+            loginItemError = LoginItemState.failureMessage(enabling: true, error: nil)
+        }
     }
 
     func refreshLoginItem() {

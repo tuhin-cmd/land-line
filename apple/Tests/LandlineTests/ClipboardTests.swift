@@ -196,13 +196,29 @@ import Testing
         let model = model()
         model.setLaunchAtLogin(true)
         #expect(model.loginItemState == .disabled)
-        #expect(model.loginItemError?.contains("development build") == true)
+        #expect(model.loginItemError?.contains("build folder") == true)
     }
 
     @Test func statesThatNeedTheUserSaySo() {
         #expect(LoginItemState.needsApproval.explanation?.contains("Login Items") == true)
-        #expect(LoginItemState.unavailable.explanation != nil)
         #expect(LoginItemState.enabled.explanation == nil)
+        #expect(LoginItemState.disabled.explanation == nil)
+    }
+
+    @Test func silentlyIgnoredRegistrationIsExplained() {
+        final class Ignoring: LoginItem {
+            var state = LoginItemState.disabled
+            func setEnabled(_ enabled: Bool) throws {}
+        }
+        let services = TestServices()
+        let custom = AppServices(
+            settings: services.settings, notificationCenter: services.center, pasteboard: services.pasteboard,
+            loginItem: Ignoring())
+        let model = AppModel(services: custom) { [backend] in backend }
+        model.setLaunchAtLogin(true)
+        #expect(model.loginItemError != nil)
+        model.setLaunchAtLogin(false)
+        #expect(model.loginItemError == nil)
     }
 
     @Test func sharedItemsAndTransfersAreKeptForLater() {
