@@ -7,10 +7,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Map;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -19,14 +19,14 @@ use tracing::{debug, info, warn};
 use crate::discovery::{self, Announcement, Discovery, DiscoveryEvent};
 use crate::identity::{self, DeviceType, Identity};
 use crate::link::{self, Link, LinkReader, LinkWriter, TrustLookup};
-use crate::packet::{Packet, TYPE_PAIR, TYPE_PING};
+use crate::packet::{Packet, TYPE_PAIR};
 use crate::pairing::{self, Action, Pairing, PairingEvent, PairingFailure, TimerId};
+use crate::payload::Peer;
+use crate::plugins::{
+    self, Context, DeviceStatus, LinkContext, PacketSender, Plugin, REGISTRY, RecentOtps,
+};
 use crate::store::{self, LocalIdentity, TrustStore, TrustedDevice};
-use crate::{Config, CoreDelegate, Device, NetworkStatus};
-
-/// Packet types this build handles. Peers never send a type we do not list,
-/// so this grows only as plugins are implemented.
-const CAPABILITIES: &[&str] = &[TYPE_PING];
+use crate::{Config, CoreDelegate, CoreError, Device, NetworkStatus};
 
 /// The peers ignore a second identity from the same device within a second;
 /// we do the same, which also absorbs a broadcast that reaches us twice.
@@ -63,6 +63,13 @@ pub(crate) enum Msg {
         device_id: String,
         command: Command,
     },
+    Plugin {
+        device_id: String,
+        command: plugins::Command,
+    },
+    /// Offer this text to every usable device.
+    Clipboard(String),
+    SetDownloadDir(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,12 +78,11 @@ pub(crate) enum Command {
     AcceptPair,
     RejectPair,
     Unpair,
-    Ping,
 }
 
 /// What handshake tasks read while the manager keeps running.
 pub(crate) struct Shared {
-    local: LocalIdentity,
+    local: Arc<LocalIdentity>,
     identity: Identity,
     /// Pinned certificate and protocol version of each paired device.
     pinned: RwLock<HashMap<String, (Vec<u8>, i64)>>,
@@ -105,10 +111,44 @@ struct DeviceEntry {
     pairing: Pairing,
     pair_timer: Option<JoinHandle<()>>,
     link: Option<LinkHandle>,
+    /// One per entry of [`REGISTRY`], in the same order.
+    plugins: Vec<Box<dyn Plugin>>,
+    /// Whether the plugins have been told the device is usable (paired and
+    /// connected).
+    usable: bool,
+    status: DeviceStatus,
+    recent_otps: RecentOtps,
+}
+
+impl DeviceEntry {
+    fn new(
+        name: String,
+        device_type: DeviceType,
+        protocol_version: i64,
+        certificate: Vec<u8>,
+        public_key: Vec<u8>,
+        paired: bool,
+    ) -> Self {
+        Self {
+            name,
+            device_type,
+            protocol_version,
+            certificate,
+            public_key,
+            pairing: Pairing::new(protocol_version, paired),
+            pair_timer: None,
+            link: None,
+            plugins: REGISTRY.iter().map(|plugin| (plugin.create)()).collect(),
+            usable: false,
+            status: DeviceStatus::default(),
+            recent_otps: RecentOtps::default(),
+        }
+    }
 }
 
 struct LinkHandle {
     id: u64,
+    address: IpAddr,
     outgoing: UnboundedSender<Packet>,
     reader: JoinHandle<()>,
     writer: JoinHandle<()>,
@@ -138,6 +178,8 @@ pub(crate) struct Manager {
     next_link: u64,
     last_identity: HashMap<String, Instant>,
     network_status: Option<NetworkStatus>,
+    download_dir: PathBuf,
+    cache_dir: PathBuf,
 }
 
 impl Manager {
@@ -150,14 +192,21 @@ impl Manager {
         tx: UnboundedSender<Msg>,
     ) -> Self {
         let name = identity::sanitize_device_name(&config.device_name);
-        let capabilities: Vec<String> = CAPABILITIES.iter().map(|&c| c.to_owned()).collect();
+        // Peers never send a packet type we do not list, so the identity
+        // carries exactly what the plugins handle.
+        let capabilities = |pick: fn(&plugins::Registration) -> &'static [&'static str]| {
+            REGISTRY
+                .iter()
+                .flat_map(|plugin| pick(plugin).iter().map(|&kind| kind.to_owned()))
+                .collect::<Vec<String>>()
+        };
         let identity = Identity {
             device_id: local.device_id().to_owned(),
             device_name: if name.is_empty() { "Mac".into() } else { name },
             device_type: config.device_type,
             protocol_version: identity::PROTOCOL_VERSION,
-            incoming_capabilities: capabilities.clone(),
-            outgoing_capabilities: capabilities,
+            incoming_capabilities: capabilities(|plugin| plugin.incoming),
+            outgoing_capabilities: capabilities(|plugin| plugin.outgoing),
             tcp_port: None,
             target_device_id: None,
             target_protocol_version: None,
@@ -177,23 +226,23 @@ impl Manager {
             );
             devices.insert(
                 device.device_id.clone(),
-                DeviceEntry {
-                    name: device.name.clone(),
-                    device_type: DeviceType::parse(&device.device_type),
+                DeviceEntry::new(
+                    device.name.clone(),
+                    DeviceType::parse(&device.device_type),
                     protocol_version,
-                    certificate: device.certificate.clone(),
+                    device.certificate.clone(),
                     public_key,
-                    pairing: Pairing::new(protocol_version, true),
-                    pair_timer: None,
-                    link: None,
-                },
+                    true,
+                ),
             );
         }
 
         let manager = Self {
+            download_dir: config.download_dir.clone(),
+            cache_dir: config.data_dir.join("cache"),
             config,
             shared: Arc::new(Shared {
-                local,
+                local: Arc::new(local),
                 identity,
                 pinned: RwLock::new(pinned),
                 tx,
@@ -238,6 +287,20 @@ impl Manager {
                     }
                 }
                 Msg::Command { device_id, command } => self.command(&device_id, command),
+                Msg::Plugin { device_id, command } => self.plugin_command(&device_id, command),
+                Msg::Clipboard(text) => {
+                    let usable: Vec<String> = self
+                        .devices
+                        .iter()
+                        .filter(|(_, entry)| entry.usable)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for device_id in usable {
+                        let command = plugins::Command::SendClipboard { text: text.clone() };
+                        self.plugin_command(&device_id, command);
+                    }
+                }
+                Msg::SetDownloadDir(path) => self.download_dir = path,
             }
         }
     }
@@ -491,21 +554,20 @@ impl Manager {
                 self.drop_link(&device_id);
             } else if let Some(old) = entry.link.take() {
                 old.close();
+                // Plugins hold senders for the old link; let them start over.
+                self.sync_plugins(&device_id);
             }
         }
-        let entry = self
-            .devices
-            .entry(device_id.clone())
-            .or_insert_with(|| DeviceEntry {
-                name: identity.device_name.clone(),
-                device_type: identity.device_type,
-                protocol_version: identity.protocol_version,
-                certificate: certificate.clone(),
-                public_key: public_key.clone(),
-                pairing: Pairing::new(identity.protocol_version, false),
-                pair_timer: None,
-                link: None,
-            });
+        let entry = self.devices.entry(device_id.clone()).or_insert_with(|| {
+            DeviceEntry::new(
+                identity.device_name.clone(),
+                identity.device_type,
+                identity.protocol_version,
+                certificate.clone(),
+                public_key.clone(),
+                false,
+            )
+        });
         entry.name = identity.device_name.clone();
         entry.device_type = identity.device_type;
         entry.protocol_version = identity.protocol_version;
@@ -517,6 +579,7 @@ impl Manager {
         let (outgoing, outgoing_rx) = mpsc::unbounded_channel();
         entry.link = Some(LinkHandle {
             id,
+            address: address.ip(),
             outgoing,
             reader: tokio::spawn(read_loop(
                 reader,
@@ -537,6 +600,7 @@ impl Manager {
         if entry.pairing.is_paired() {
             self.remember(&device_id);
         }
+        self.sync_plugins(&device_id);
         self.publish();
     }
 
@@ -560,10 +624,105 @@ impl Manager {
             }
             return;
         }
-        if packet.kind == TYPE_PING {
-            self.delegate.ping_received(device_id);
-        }
         self.delegate.packet_received(device_id, &packet);
+        let handler = REGISTRY
+            .iter()
+            .position(|plugin| plugin.incoming.contains(&packet.kind.as_str()));
+        if let Some(index) = handler {
+            self.plugins(device_id, |plugins, ctx| {
+                plugins[index].packet(&packet, ctx)
+            });
+        }
+    }
+
+    /// Runs `call` with the device's plugins and a context for them, then
+    /// publishes the device list if a plugin changed the device's status.
+    fn plugins(
+        &mut self,
+        device_id: &str,
+        call: impl FnOnce(&mut [Box<dyn Plugin>], &mut Context<'_>),
+    ) {
+        let Some(entry) = self.devices.get_mut(device_id) else {
+            return;
+        };
+        let mut plugins = std::mem::take(&mut entry.plugins);
+        let before = entry.status.clone();
+        let link = entry
+            .link
+            .as_ref()
+            .filter(|_| entry.usable)
+            .map(|handle| LinkContext {
+                sender: PacketSender(handle.outgoing.clone()),
+                peer: Peer {
+                    address: handle.address,
+                    certificate: entry.certificate.as_slice().into(),
+                    local: Arc::clone(&self.shared.local),
+                },
+            });
+        let mut ctx = Context {
+            device_id,
+            device_name: &entry.name,
+            delegate: &self.delegate,
+            download_dir: &self.download_dir,
+            cache_dir: &self.cache_dir,
+            link,
+            status: &mut entry.status,
+            recent_otps: &mut entry.recent_otps,
+        };
+        call(&mut plugins, &mut ctx);
+        entry.plugins = plugins;
+        if entry.status != before {
+            self.publish();
+        }
+    }
+
+    /// Tells the device's plugins when it starts or stops being usable
+    /// (paired and connected).
+    fn sync_plugins(&mut self, device_id: &str) {
+        let Some(entry) = self.devices.get_mut(device_id) else {
+            return;
+        };
+        let usable = entry.pairing.is_paired() && entry.link.is_some();
+        if usable == entry.usable {
+            return;
+        }
+        entry.usable = usable;
+        self.plugins(device_id, |plugins, ctx| {
+            for plugin in plugins {
+                if usable {
+                    plugin.connected(ctx);
+                } else {
+                    plugin.disconnected(ctx);
+                }
+            }
+        });
+        if !usable && let Some(entry) = self.devices.get_mut(device_id) {
+            // What the device last reported says nothing about it now.
+            entry.status = DeviceStatus::default();
+        }
+    }
+
+    fn plugin_command(&mut self, device_id: &str, command: plugins::Command) {
+        let usable = self
+            .devices
+            .get(device_id)
+            .is_some_and(|entry| entry.usable);
+        let handler = REGISTRY
+            .iter()
+            .position(|plugin| plugin.name == command.plugin());
+        match (usable, handler) {
+            (true, Some(index)) => {
+                self.plugins(device_id, |plugins, ctx| {
+                    plugins[index].command(command, ctx)
+                });
+            }
+            // A storage request carries a reply channel someone is awaiting.
+            _ => {
+                if let plugins::Command::Storage(request) = command {
+                    request.fail(CoreError::NotReachable);
+                }
+            }
+        }
     }
 
     fn link_down(&mut self, device_id: &str, link: u64) {
@@ -613,12 +772,6 @@ impl Manager {
             Command::AcceptPair => entry.pairing.accept(),
             Command::RejectPair => entry.pairing.cancel(),
             Command::Unpair => entry.pairing.unpair(reachable),
-            Command::Ping => {
-                if let (true, Some(handle)) = (entry.pairing.is_paired(), &entry.link) {
-                    let _ = handle.outgoing.send(Packet::new(TYPE_PING, Map::new()));
-                }
-                return;
-            }
         };
         self.run_actions(device_id, actions);
     }
@@ -675,6 +828,7 @@ impl Manager {
                 Action::Event(PairingEvent::IncomingRequest) => {}
             }
         }
+        self.sync_plugins(device_id);
         self.publish();
     }
 
@@ -728,6 +882,7 @@ impl Manager {
                 reachable: entry.link.is_some(),
                 pair_state: entry.pairing.state(),
                 verification_key: entry.pairing.verification_key(our_key, &entry.public_key),
+                battery: entry.status.battery,
             })
             .collect();
         devices.sort_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));

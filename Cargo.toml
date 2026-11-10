@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/landline-core", "crates/landline-ffi", "crates/landline-cli"]
+members = [
+    "crates/landline-core",
+    "crates/landline-sftp",
+    "crates/landline-ffi",
+    "crates/landline-cli",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,9 +16,14 @@ publish = false
 
 [workspace.dependencies]
 landline-core = { path = "crates/landline-core" }
+landline-sftp = { path = "crates/landline-sftp" }
 
 # Dependencies are not stepped through, and their debug info is most of the
 # size of a debug build.
+# Line tables keep backtraces readable at a fraction of full debug info.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 debug = false
 

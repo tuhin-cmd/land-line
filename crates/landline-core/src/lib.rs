@@ -12,8 +12,11 @@ pub mod discovery;
 pub mod identity;
 mod link;
 mod manager;
+pub mod otp;
 pub mod packet;
 pub mod pairing;
+mod payload;
+mod plugins;
 pub mod store;
 pub mod tls;
 
@@ -23,14 +26,20 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::oneshot;
 
 use crate::discovery::DiscoveryConfig;
 use crate::manager::{Command, Manager, Msg};
 use crate::store::{LocalIdentity, TrustStore};
 
 pub use crate::identity::DeviceType;
+pub use crate::otp::OtpCode;
 pub use crate::packet::Packet;
 pub use crate::pairing::{PairState, PairingFailure};
+pub use crate::plugins::notifications::PhoneNotification;
+pub use crate::plugins::sftp::{RemoteEntry, StorageRoot};
+pub use crate::plugins::share::{Transfer, TransferDirection, TransferState};
+pub use crate::plugins::sms::SmsMessage;
 
 /// Version of the core, as set in the workspace manifest.
 pub fn version() -> &'static str {
@@ -47,6 +56,12 @@ pub enum CoreError {
     /// [`CoreDelegate::devices_changed`].
     #[error("unknown device")]
     UnknownDevice,
+    /// The device is not connected, or not paired.
+    #[error("the device is not connected")]
+    NotReachable,
+    /// Browsing or transferring the device's files failed.
+    #[error("{0}")]
+    Storage(String),
 }
 
 #[derive(Debug, Clone)]
@@ -61,12 +76,19 @@ pub struct Config {
     /// Whether to announce by UDP broadcast. Tests turn this off to stay off
     /// the LAN and reach each other with [`Core::announce_to`] instead.
     pub broadcast: bool,
+    /// Where files sent by a device are saved. Created when first needed.
+    /// [`Core::set_download_dir`] changes it later.
+    pub download_dir: PathBuf,
 }
 
 impl Config {
     pub fn new(data_dir: impl Into<PathBuf>, device_name: impl Into<String>) -> Self {
+        let data_dir = data_dir.into();
+        let download_dir = std::env::home_dir()
+            .map_or_else(|| data_dir.join("Received"), |home| home.join("Downloads"));
         Self {
-            data_dir: data_dir.into(),
+            download_dir,
+            data_dir,
             device_name: device_name.into(),
             device_type: DeviceType::Laptop,
             discovery: DiscoveryConfig::default(),
@@ -88,6 +110,15 @@ pub struct Device {
     /// Shown on both devices while pairing is pending in either direction,
     /// so the user can check they match. `None` otherwise.
     pub verification_key: Option<String>,
+    /// The device's battery, once it has reported it on this connection.
+    pub battery: Option<Battery>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    /// Percent, 0 to 100.
+    pub charge: u8,
+    pub charging: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +145,22 @@ pub trait CoreDelegate: Send + Sync + 'static {
     /// Every packet from a paired device other than pairing itself. Bodies
     /// can hold private content, so do not log them.
     fn packet_received(&self, _device_id: &str, _packet: &Packet) {}
+    /// A notification appeared on the device or changed.
+    fn notification_posted(&self, _device_id: &str, _notification: &PhoneNotification) {}
+    /// A notification went away on the device.
+    fn notification_removed(&self, _device_id: &str, _notification_id: &str) {}
+    fn sms_received(&self, _device_id: &str, _message: &SmsMessage) {}
+    /// A one-time code arrived in an SMS or a notification. Reported once
+    /// per code, even when both carry it.
+    fn otp_detected(&self, _device_id: &str, _otp: &OtpCode) {}
+    /// The device offered its clipboard text.
+    fn clipboard_received(&self, _device_id: &str, _text: &str) {}
+    /// A file transfer started, progressed, or ended.
+    fn transfer_updated(&self, _transfer: &Transfer) {}
+    /// The device shared a piece of text.
+    fn text_shared(&self, _device_id: &str, _text: &str) {}
+    /// The device shared a link.
+    fn url_shared(&self, _device_id: &str, _url: &str) {}
 }
 
 pub struct Core {
@@ -218,19 +265,132 @@ impl Core {
 
     /// Pings a paired, reachable device. Does nothing otherwise.
     pub fn send_ping(&self, device_id: &str) -> Result<(), CoreError> {
-        self.command(device_id, Command::Ping)
+        self.plugin(device_id, plugins::Command::Ping)
     }
 
-    fn command(&self, device_id: &str, command: Command) -> Result<(), CoreError> {
+    /// Removes a notification from the device.
+    pub fn dismiss_notification(
+        &self,
+        device_id: &str,
+        notification_id: &str,
+    ) -> Result<(), CoreError> {
+        let id = notification_id.to_owned();
+        self.plugin(device_id, plugins::Command::DismissNotification { id })
+    }
+
+    /// Offers `text` to the clipboard of every paired, connected device.
+    pub fn send_clipboard(&self, text: &str) {
+        self.send(Msg::Clipboard(text.to_owned()));
+    }
+
+    /// Sends files to the device. Progress arrives through
+    /// [`CoreDelegate::transfer_updated`].
+    pub fn send_files(&self, device_id: &str, paths: Vec<PathBuf>) -> Result<(), CoreError> {
+        self.plugin(device_id, plugins::Command::SendFiles { paths })
+    }
+
+    /// Stops a transfer with that device. An incoming file's partial copy
+    /// is deleted.
+    pub fn cancel_transfer(&self, device_id: &str, transfer_id: u64) -> Result<(), CoreError> {
+        let id = transfer_id;
+        self.plugin(device_id, plugins::Command::CancelTransfer { id })
+    }
+
+    /// Changes where files sent by a device are saved from now on.
+    pub fn set_download_dir(&self, path: impl Into<PathBuf>) {
+        self.send(Msg::SetDownloadDir(path.into()));
+    }
+
+    /// The places on the device that can be browsed.
+    pub async fn storage_roots(&self, device_id: &str) -> Result<Vec<StorageRoot>, CoreError> {
+        self.storage(device_id, |reply| plugins::sftp::Request::Roots { reply })
+            .await
+    }
+
+    /// Lists a folder on the device.
+    pub async fn list_dir(
+        &self,
+        device_id: &str,
+        path: &str,
+    ) -> Result<Vec<RemoteEntry>, CoreError> {
+        let path = path.to_owned();
+        self.storage(device_id, |reply| plugins::sftp::Request::List {
+            path,
+            reply,
+        })
+        .await
+    }
+
+    /// Copies a file from the device to `local`.
+    pub async fn download(
+        &self,
+        device_id: &str,
+        remote: &str,
+        local: impl Into<PathBuf>,
+    ) -> Result<(), CoreError> {
+        let (remote, local) = (remote.to_owned(), local.into());
+        self.storage(device_id, |reply| plugins::sftp::Request::Download {
+            remote,
+            local,
+            reply,
+        })
+        .await
+    }
+
+    /// Copies the file at `local` to `remote` on the device.
+    pub async fn upload(
+        &self,
+        device_id: &str,
+        local: impl Into<PathBuf>,
+        remote: &str,
+    ) -> Result<(), CoreError> {
+        let (local, remote) = (local.into(), remote.to_owned());
+        self.storage(device_id, |reply| plugins::sftp::Request::Upload {
+            local,
+            remote,
+            reply,
+        })
+        .await
+    }
+
+    /// Sends a storage request and waits for its answer. The work runs on
+    /// the core's runtime, so this can be awaited from any executor.
+    async fn storage<T>(
+        &self,
+        device_id: &str,
+        request: impl FnOnce(plugins::sftp::Reply<T>) -> plugins::sftp::Request,
+    ) -> Result<T, CoreError> {
+        let (reply, answer) = oneshot::channel();
+        self.plugin(device_id, plugins::Command::Storage(request(reply)))?;
+        // A dropped reply means the device went away mid-request.
+        answer.await.unwrap_or(Err(CoreError::NotReachable))
+    }
+
+    fn plugin(&self, device_id: &str, command: plugins::Command) -> Result<(), CoreError> {
+        self.check_known(device_id)?;
+        self.send(Msg::Plugin {
+            device_id: device_id.to_owned(),
+            command,
+        });
+        Ok(())
+    }
+
+    fn check_known(&self, device_id: &str) -> Result<(), CoreError> {
         let known = self
             .devices
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|device| device.id == device_id);
-        if !known {
-            return Err(CoreError::UnknownDevice);
+        if known {
+            Ok(())
+        } else {
+            Err(CoreError::UnknownDevice)
         }
+    }
+
+    fn command(&self, device_id: &str, command: Command) -> Result<(), CoreError> {
+        self.check_known(device_id)?;
         self.send(Msg::Command {
             device_id: device_id.to_owned(),
             command,

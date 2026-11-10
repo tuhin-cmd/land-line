@@ -1,0 +1,10 @@
+[package]
+name = "landline-sftp"
+description = "SFTP client for browsing a phone's storage through KDE Connect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
