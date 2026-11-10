@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
+
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build xcframework and Swift bindings
+        run: ./scripts/build-xcframework.sh
+      - name: Test the bridge
+        working-directory: apple/LandlineKit
+        run: swift test
+      - name: Build the app
+        run: |
+          cd apple
+          xcodegen generate
+          xcodebuild build \
+            -project Landline.xcodeproj \
+            -scheme Landline \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData"
+      - name: Check the app bundle
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Release/Landline.app"
+          lipo -archs "$app/Contents/MacOS/Landline"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app/Contents/Info.plist")" = true
+          codesign --verify --strict "$app"
