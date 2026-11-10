@@ -1,0 +1,12 @@
+[package]
+name = "landline-core"
+description = "Landline protocol core: discovery, links, pairing, plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+tracing = "0.1.44"

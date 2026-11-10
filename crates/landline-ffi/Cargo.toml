@@ -1,0 +1,23 @@
+[package]
+name = "landline-ffi"
+description = "UniFFI bindings for landline-core. Adapts types, holds no logic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+landline-core.workspace = true
+thiserror = "2.0.21"
+uniffi = "0.32.2"

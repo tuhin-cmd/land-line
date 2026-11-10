@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/landline-core", "crates/landline-ffi", "crates/landline-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+landline-core = { path = "crates/landline-core" }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
