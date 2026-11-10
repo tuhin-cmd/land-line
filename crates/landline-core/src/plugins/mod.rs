@@ -26,9 +26,18 @@ use crate::{Battery, CoreDelegate, OtpCode};
 
 /// One feature's handling of one device.
 pub(crate) trait Plugin: Send {
-    /// The device became usable: it is paired and a link is up. Also called
-    /// when a link replaces another, after [`Plugin::disconnected`].
+    /// The device became usable: it is paired and a link is up.
     fn connected(&mut self, _ctx: &mut Context<'_>) {}
+
+    /// A new link replaced the device's old one with no gap in between.
+    /// Phones announce themselves every few minutes and each announcement
+    /// ends in a fresh link, so this is routine, not a reconnection the
+    /// user should notice. `ctx.link` is the new link; senders for the old
+    /// one are dead. By default a plugin starts over.
+    fn link_replaced(&mut self, ctx: &mut Context<'_>) {
+        self.disconnected(ctx);
+        self.connected(ctx);
+    }
 
     /// The device stopped being usable: the link dropped or it was unpaired.
     /// `ctx.link` is already `None`.

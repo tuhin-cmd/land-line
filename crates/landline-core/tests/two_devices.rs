@@ -181,6 +181,16 @@ fn devices_connect_pair_ping_and_remember() {
     phone.core.send_ping(&mac_id).unwrap();
     mac.wait_for_event(|event| matches!(event, Event::Ping(_)).then_some(()));
 
+    // The phone announces again while connected, as real phones do every
+    // few minutes: the new link takes over and nothing else changes.
+    std::thread::sleep(Duration::from_millis(1100)); // past the identity rate limit
+    phone.core.announce_to(LOOPBACK);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(mac.core.devices()[0].pair_state, PairState::Paired);
+    assert!(mac.core.devices()[0].reachable);
+    mac.core.send_ping(&phone_id).unwrap();
+    phone.wait_for_event(|event| matches!(event, Event::Ping(_)).then_some(()));
+
     // Clipboard text and a file cross the link through the real plugins.
     mac.core.send_clipboard("copied on the Mac");
     let text = phone.wait_for_event(|event| match event {

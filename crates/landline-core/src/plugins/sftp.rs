@@ -125,6 +125,10 @@ fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
 }
 
 impl Plugin for Sftp {
+    // The SFTP session is its own connection and outlives the link it was
+    // set up over, so browsing and transfers carry on.
+    fn link_replaced(&mut self, _ctx: &mut Context<'_>) {}
+
     fn disconnected(&mut self, _ctx: &mut Context<'_>) {
         let mut state = lock(&self.state);
         state.generation += 1;

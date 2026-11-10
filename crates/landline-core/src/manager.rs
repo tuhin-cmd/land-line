@@ -616,13 +616,14 @@ impl Manager {
         // old one without disturbing a pairing in progress. A different
         // certificate is a different key, though, and would change the
         // verification key under the user's eyes: that ends the attempt.
+        // Whether this link takes over from a live one the plugins were using.
+        let mut replaced = false;
         if let Some(entry) = self.devices.get_mut(&device_id) {
             if entry.certificate != certificate {
                 self.drop_link(&device_id);
             } else if let Some(old) = entry.link.take() {
                 old.close();
-                // Plugins hold senders for the old link; let them start over.
-                self.sync_plugins(&device_id);
+                replaced = entry.usable;
             }
         }
         let entry = self.devices.entry(device_id.clone()).or_insert_with(|| {
@@ -668,7 +669,15 @@ impl Manager {
         if entry.pairing.is_paired() {
             self.remember(&device_id);
         }
-        self.sync_plugins(&device_id);
+        if replaced {
+            self.plugins(&device_id, |plugins, ctx| {
+                for plugin in plugins {
+                    plugin.link_replaced(ctx);
+                }
+            });
+        } else {
+            self.sync_plugins(&device_id);
+        }
         self.publish();
     }
 

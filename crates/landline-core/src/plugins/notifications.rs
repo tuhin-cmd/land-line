@@ -128,6 +128,13 @@ impl Plugin for Notifications {
         ctx.send(Packet::new(TYPE_NOTIFICATION_REQUEST, body));
     }
 
+    fn link_replaced(&mut self, ctx: &mut Context<'_>) {
+        // The notifications are still showing on the phone. Starting over
+        // would take every banner off the Mac and list them again as old
+        // ones, every few minutes. Asking again is enough to catch up.
+        self.connected(ctx);
+    }
+
     fn disconnected(&mut self, ctx: &mut Context<'_>) {
         // The phone will send what is still showing when it is back; until
         // then the Mac would show notifications that may be long gone.
@@ -440,6 +447,28 @@ mod tests {
 
     fn cancel(id: &str) -> Packet {
         packet(json!({"id": id, "isCancel": true}))
+    }
+
+    #[test]
+    fn a_replaced_link_keeps_the_notifications_and_asks_again() {
+        let mut harness = Harness::new();
+        let mut plugin = (REGISTRATION.create)();
+        plugin.packet(&posted("one"), &mut harness.ctx());
+        harness.recorder.take();
+        harness.sent();
+
+        plugin.link_replaced(&mut harness.ctx());
+        assert!(harness.recorder.take().is_empty());
+        let sent = harness.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, TYPE_NOTIFICATION_REQUEST);
+
+        // The notification is still known, so it can still be removed.
+        plugin.packet(&cancel("one"), &mut harness.ctx());
+        assert_eq!(
+            harness.recorder.take(),
+            [Event::NotificationRemoved("one".into())]
+        );
     }
 
     fn posted_events(events: &[Event]) -> Vec<&PhoneNotification> {
