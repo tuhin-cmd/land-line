@@ -89,14 +89,14 @@ final class DemoBackend: DeviceBackend {
     // a demo pairing request is never mistaken for a real one.
     private static let pixel = Device(
         id: "demo0000000000000000000000000001", name: "Pixel 8a", kind: .phone,
-        reachable: true, pairState: .paired, verificationKey: nil)
+        reachable: true, pairState: .paired, verificationKey: nil, battery: nil)
 
     private static let tvID = "demo0000000000000000000000000005"
 
     private static func devices(for scenario: DemoScenario) -> [Device] {
         let tablet = Device(
             id: "demo0000000000000000000000000002", name: "Galaxy Tab S9", kind: .tablet,
-            reachable: false, pairState: .paired, verificationKey: nil)
+            reachable: false, pairState: .paired, verificationKey: nil, battery: nil)
         switch scenario {
         case .searching, .error: return []
         case .blocked, .offline: return [Device(pixel, reachable: false), tablet]
@@ -106,16 +106,16 @@ final class DemoBackend: DeviceBackend {
                 pixel, tablet,
                 Device(
                     id: "demo0000000000000000000000000003", name: "Fairphone 5", kind: .phone,
-                    reachable: true, pairState: .requestedByPeer, verificationKey: "3F9A0C7E"),
+                    reachable: true, pairState: .requestedByPeer, verificationKey: "3F9A0C7E", battery: nil),
                 Device(
                     id: "demo0000000000000000000000000004", name: "Nokia G42", kind: .phone,
-                    reachable: true, pairState: .requested, verificationKey: "B71D4E20"),
+                    reachable: true, pairState: .requested, verificationKey: "B71D4E20", battery: nil),
                 Device(
                     id: tvID, name: "Living Room TV", kind: .tv,
-                    reachable: true, pairState: .notPaired, verificationKey: nil),
+                    reachable: true, pairState: .notPaired, verificationKey: nil, battery: nil),
                 Device(
                     id: "demo0000000000000000000000000006", name: "Work Laptop", kind: .laptop,
-                    reachable: true, pairState: .notPaired, verificationKey: nil),
+                    reachable: true, pairState: .notPaired, verificationKey: nil, battery: nil),
             ]
         }
     }

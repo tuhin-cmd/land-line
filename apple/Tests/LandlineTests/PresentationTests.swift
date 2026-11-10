@@ -13,7 +13,7 @@ func device(
 ) -> Device {
     Device(
         id: id ?? "id-\(name)", name: name, kind: kind, reachable: reachable,
-        pairState: pairState, verificationKey: key)
+        pairState: pairState, verificationKey: key, battery: nil)
 }
 
 @Suite struct RowContentTests {

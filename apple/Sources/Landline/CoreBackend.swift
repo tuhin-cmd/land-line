@@ -73,7 +73,7 @@ final class CoreBackend: DeviceBackend {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let dataDir = support.appendingPathComponent("io.github.tuhin-cmd.landline", isDirectory: true)
-        return CoreConfig(dataDir: dataDir.path, deviceName: computerName())
+        return CoreConfig(dataDir: dataDir.path, deviceName: computerName(), downloadDir: nil)
     }
 
     /// The name set in System Settings > General > Sharing, which is what the
@@ -109,4 +109,14 @@ private final class DelegateAdapter: CoreDelegate {
     func networkStatusChanged(status: NetworkStatus) {
         continuation.yield(.networkStatusChanged(status))
     }
+
+    // Not shown in the app yet.
+    func notificationPosted(deviceId: String, notification: PhoneNotification) {}
+    func notificationRemoved(deviceId: String, notificationId: String) {}
+    func smsReceived(deviceId: String, message: SmsMessage) {}
+    func otpDetected(deviceId: String, otp: OtpCode) {}
+    func clipboardReceived(deviceId: String, text: String) {}
+    func transferUpdated(transfer: Transfer) {}
+    func textShared(deviceId: String, text: String) {}
+    func urlShared(deviceId: String, url: String) {}
 }

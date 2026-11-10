@@ -23,6 +23,12 @@ pub enum LandlineError {
     /// `devices_changed`.
     #[error("unknown device")]
     UnknownDevice,
+    /// The device is not connected, or not paired.
+    #[error("the device is not connected")]
+    NotReachable,
+    /// Browsing or transferring the device's files failed.
+    #[error("{message}")]
+    Storage { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -57,6 +63,111 @@ pub struct Device {
     /// Eight characters shown on both devices while pairing is pending in
     /// either direction, so the user can check they match. `None` otherwise.
     pub verification_key: Option<String>,
+    /// The device's battery, once it has reported it on this connection.
+    pub battery: Option<Battery>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct Battery {
+    /// Percent, 0 to 100.
+    pub charge: u8,
+    pub charging: bool,
+}
+
+/// A notification showing on the phone.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PhoneNotification {
+    /// Identifies the notification on its device. A later notification with
+    /// the same ID replaces this one.
+    pub id: String,
+    pub app_name: String,
+    pub title: String,
+    pub text: String,
+    /// When the phone posted it, in milliseconds since the Unix epoch.
+    pub time_ms: i64,
+    /// Whether `dismiss_notification` can remove it.
+    pub dismissable: bool,
+    /// It was already showing on the phone when we connected: list it, but
+    /// do not announce it.
+    pub silent: bool,
+    /// Path of the app's icon as a PNG file, if the phone sent one.
+    pub icon_path: Option<String>,
+}
+
+/// A text message the phone received.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SmsMessage {
+    /// The sender's number or alphanumeric sender ID.
+    pub sender: String,
+    pub body: String,
+    /// When the phone received it, in milliseconds since the Unix epoch.
+    pub time_ms: i64,
+}
+
+/// A one-time code found in an SMS or a notification.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OtpCode {
+    /// The digits only.
+    pub code: String,
+    /// The app or sender the text came from.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferDirection {
+    /// From the device to this Mac.
+    Incoming,
+    /// From this Mac to the device.
+    Outgoing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferState {
+    InProgress,
+    /// For an incoming file, `path` is where it was saved; for an outgoing
+    /// one, the file that was sent.
+    Finished {
+        path: String,
+    },
+    Failed {
+        reason: String,
+    },
+    Cancelled,
+}
+
+/// One file moving between the devices.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Transfer {
+    /// Unique while the app runs.
+    pub id: u64,
+    pub device_id: String,
+    pub file_name: String,
+    pub direction: TransferDirection,
+    pub bytes_done: u64,
+    /// `None` when the sender did not say how large the file is.
+    pub bytes_total: Option<u64>,
+    pub state: TransferState,
+}
+
+/// A file or folder on the device.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RemoteEntry {
+    pub name: String,
+    /// Absolute path on the device, for further calls.
+    pub path: String,
+    pub is_dir: bool,
+    /// In bytes. Zero for folders.
+    pub size: u64,
+    /// Seconds since the Unix epoch, if the device reported it.
+    pub modified_secs: Option<i64>,
+}
+
+/// A place on the device to start browsing from, such as internal storage
+/// or an SD card.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct StorageRoot {
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -88,6 +199,9 @@ pub struct CoreConfig {
     pub data_dir: String,
     /// Name shown on the other device.
     pub device_name: String,
+    /// Where files sent by a device are saved. `None` means the user's
+    /// Downloads folder.
+    pub download_dir: Option<String>,
 }
 
 /// Implemented in Swift. Methods are called on core threads.
@@ -100,6 +214,22 @@ pub trait CoreDelegate: Send + Sync {
     fn pairing_failed(&self, device_id: String, reason: PairFailure);
     fn ping_received(&self, device_id: String);
     fn network_status_changed(&self, status: NetworkStatus);
+    /// A notification appeared on the device or changed.
+    fn notification_posted(&self, device_id: String, notification: PhoneNotification);
+    /// A notification went away on the device.
+    fn notification_removed(&self, device_id: String, notification_id: String);
+    fn sms_received(&self, device_id: String, message: SmsMessage);
+    /// A one-time code arrived in an SMS or a notification. Reported once
+    /// per code, even when both carry it.
+    fn otp_detected(&self, device_id: String, otp: OtpCode);
+    /// The device offered its clipboard text.
+    fn clipboard_received(&self, device_id: String, text: String);
+    /// A file transfer started, progressed, or ended.
+    fn transfer_updated(&self, transfer: Transfer);
+    /// The device shared a piece of text.
+    fn text_shared(&self, device_id: String, text: String);
+    /// The device shared a link.
+    fn url_shared(&self, device_id: String, url: String);
 }
 
 struct DelegateAdapter(Box<dyn CoreDelegate>);
@@ -135,6 +265,85 @@ impl landline_core::CoreDelegate for DelegateAdapter {
             Core::Blocked => NetworkStatus::Blocked,
         });
     }
+
+    fn notification_posted(&self, device_id: &str, n: &landline_core::PhoneNotification) {
+        let notification = PhoneNotification {
+            id: n.id.clone(),
+            app_name: n.app_name.clone(),
+            title: n.title.clone(),
+            text: n.text.clone(),
+            time_ms: n.time_ms,
+            dismissable: n.dismissable,
+            silent: n.silent,
+            icon_path: n.icon_path.as_deref().map(path_string),
+        };
+        self.0
+            .notification_posted(device_id.to_owned(), notification);
+    }
+
+    fn notification_removed(&self, device_id: &str, notification_id: &str) {
+        self.0
+            .notification_removed(device_id.to_owned(), notification_id.to_owned());
+    }
+
+    fn sms_received(&self, device_id: &str, message: &landline_core::SmsMessage) {
+        let message = SmsMessage {
+            sender: message.sender.clone(),
+            body: message.body.clone(),
+            time_ms: message.time_ms,
+        };
+        self.0.sms_received(device_id.to_owned(), message);
+    }
+
+    fn otp_detected(&self, device_id: &str, otp: &landline_core::OtpCode) {
+        let otp = OtpCode {
+            code: otp.code.clone(),
+            source: otp.source.clone(),
+        };
+        self.0.otp_detected(device_id.to_owned(), otp);
+    }
+
+    fn clipboard_received(&self, device_id: &str, text: &str) {
+        self.0
+            .clipboard_received(device_id.to_owned(), text.to_owned());
+    }
+
+    fn transfer_updated(&self, transfer: &landline_core::Transfer) {
+        use landline_core::{TransferDirection as Direction, TransferState as State};
+        self.0.transfer_updated(Transfer {
+            id: transfer.id,
+            device_id: transfer.device_id.clone(),
+            file_name: transfer.file_name.clone(),
+            direction: match transfer.direction {
+                Direction::Incoming => TransferDirection::Incoming,
+                Direction::Outgoing => TransferDirection::Outgoing,
+            },
+            bytes_done: transfer.bytes_done,
+            bytes_total: transfer.bytes_total,
+            state: match &transfer.state {
+                State::InProgress => TransferState::InProgress,
+                State::Finished { path } => TransferState::Finished {
+                    path: path_string(path),
+                },
+                State::Failed { reason } => TransferState::Failed {
+                    reason: reason.clone(),
+                },
+                State::Cancelled => TransferState::Cancelled,
+            },
+        });
+    }
+
+    fn text_shared(&self, device_id: &str, text: &str) {
+        self.0.text_shared(device_id.to_owned(), text.to_owned());
+    }
+
+    fn url_shared(&self, device_id: &str, url: &str) {
+        self.0.url_shared(device_id.to_owned(), url.to_owned());
+    }
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 impl From<landline_core::Device> for Device {
@@ -158,6 +367,10 @@ impl From<landline_core::Device> for Device {
                 Core::Paired => PairState::Paired,
             },
             verification_key: device.verification_key,
+            battery: device.battery.map(|battery| Battery {
+                charge: battery.charge,
+                charging: battery.charging,
+            }),
         }
     }
 }
@@ -166,6 +379,8 @@ impl From<landline_core::CoreError> for LandlineError {
     fn from(error: landline_core::CoreError) -> Self {
         match error {
             landline_core::CoreError::UnknownDevice => Self::UnknownDevice,
+            landline_core::CoreError::NotReachable => Self::NotReachable,
+            landline_core::CoreError::Storage(message) => Self::Storage { message },
             other => Self::Startup {
                 message: other.to_string(),
             },
@@ -187,7 +402,11 @@ impl LandlineCore {
         config: CoreConfig,
         delegate: Box<dyn CoreDelegate>,
     ) -> Result<Arc<Self>, LandlineError> {
-        let config = landline_core::Config::new(config.data_dir, config.device_name);
+        let download_dir = config.download_dir;
+        let mut config = landline_core::Config::new(config.data_dir, config.device_name);
+        if let Some(download_dir) = download_dir {
+            config.download_dir = download_dir.into();
+        }
         let inner = landline_core::Core::new(config, Arc::new(DelegateAdapter(delegate)))?;
         Ok(Arc::new(Self { inner }))
     }
@@ -233,5 +452,97 @@ impl LandlineCore {
     /// Pings a paired, reachable device. Does nothing otherwise.
     pub fn send_ping(&self, device_id: String) -> Result<(), LandlineError> {
         Ok(self.inner.send_ping(&device_id)?)
+    }
+
+    /// Removes a notification from the device.
+    pub fn dismiss_notification(
+        &self,
+        device_id: String,
+        notification_id: String,
+    ) -> Result<(), LandlineError> {
+        Ok(self
+            .inner
+            .dismiss_notification(&device_id, &notification_id)?)
+    }
+
+    /// Offers `text` to the clipboard of every paired, connected device.
+    pub fn send_clipboard(&self, text: String) {
+        self.inner.send_clipboard(&text);
+    }
+
+    /// Sends files to the device. Progress arrives through
+    /// `transfer_updated`.
+    pub fn send_files(&self, device_id: String, paths: Vec<String>) -> Result<(), LandlineError> {
+        let paths = paths.into_iter().map(Into::into).collect();
+        Ok(self.inner.send_files(&device_id, paths)?)
+    }
+
+    /// Stops a transfer with that device. An incoming file's partial copy
+    /// is deleted.
+    pub fn cancel_transfer(
+        &self,
+        device_id: String,
+        transfer_id: u64,
+    ) -> Result<(), LandlineError> {
+        Ok(self.inner.cancel_transfer(&device_id, transfer_id)?)
+    }
+
+    /// Changes where files sent by a device are saved from now on.
+    pub fn set_download_dir(&self, path: String) {
+        self.inner.set_download_dir(path);
+    }
+
+    /// The places on the device that can be browsed.
+    pub async fn storage_roots(
+        &self,
+        device_id: String,
+    ) -> Result<Vec<StorageRoot>, LandlineError> {
+        let roots = self.inner.storage_roots(&device_id).await?;
+        Ok(roots
+            .into_iter()
+            .map(|root| StorageRoot {
+                name: root.name,
+                path: root.path,
+            })
+            .collect())
+    }
+
+    /// Lists a folder on the device.
+    pub async fn list_dir(
+        &self,
+        device_id: String,
+        path: String,
+    ) -> Result<Vec<RemoteEntry>, LandlineError> {
+        let entries = self.inner.list_dir(&device_id, &path).await?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| RemoteEntry {
+                name: entry.name,
+                path: entry.path,
+                is_dir: entry.is_dir,
+                size: entry.size,
+                modified_secs: entry.modified_secs,
+            })
+            .collect())
+    }
+
+    /// Copies a file from the device to `local`.
+    pub async fn download(
+        &self,
+        device_id: String,
+        remote: String,
+        local: String,
+    ) -> Result<(), LandlineError> {
+        Ok(self.inner.download(&device_id, &remote, local).await?)
+    }
+
+    /// Copies the file at `local` to `remote` on the device.
+    pub async fn upload(
+        &self,
+        device_id: String,
+        local: String,
+        remote: String,
+    ) -> Result<(), LandlineError> {
+        Ok(self.inner.upload(&device_id, local, &remote).await?)
     }
 }
