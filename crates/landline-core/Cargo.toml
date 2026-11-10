@@ -11,6 +11,7 @@ publish.workspace = true
 base64 = "0.23.1"
 getrandom = "0.4.3"
 if-addrs = "0.15.0"
+landline-sftp.workspace = true
 mdns-sd = "0.21.7"
 rcgen = "0.14.7"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
