@@ -55,6 +55,9 @@ lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/Landline"
 version=$(cargo pkgid --package landline-core | sed 's/.*[#@]//')
 cp apple/Support/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
+# A build number that always increases. macOS keys some of what it caches
+# about an app (its icon in Notification Center, for one) on this.
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(date +%Y%m%d%H%M)" "$app/Contents/Info.plist"
 
 # macOS ties permissions (Local Network, notifications) to the signature. An
 # ad-hoc signature is a hash of this exact build, so every rebuild is a new
