@@ -46,7 +46,9 @@ done
 
 app=build/Landline.app
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+# Without an icon macOS shows a blank placeholder beside every notification.
+cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/Landline"
 
 # The app version is the core version, so there is one number to bump.
