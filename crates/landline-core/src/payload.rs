@@ -7,10 +7,6 @@
 //! connection, is the TLS server. Both sides pin the other's certificate, so
 //! only a paired device can fetch or deliver a payload.
 
-// Parts of this are unused until every plugin is implemented; remove this
-// once they are.
-#![allow(dead_code)]
-
 use std::io;
 use std::net::IpAddr;
 use std::ops::RangeInclusive;

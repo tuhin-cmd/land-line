@@ -679,7 +679,6 @@ impl Manager {
             });
         let mut ctx = Context {
             device_id,
-            device_name: &entry.name,
             delegate: &self.delegate,
             download_dir: &self.download_dir,
             cache_dir: &self.cache_dir,

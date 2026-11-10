@@ -16,10 +16,11 @@ use serde_json::Map;
 use tokio::sync::oneshot;
 use tracing::debug;
 
+use super::share::{self, Transfer, TransferDirection, TransferState};
 use super::{Command, Context, LinkContext, Plugin, Registration};
-use crate::CoreError;
 use crate::packet::Packet;
 use crate::store;
+use crate::{CoreDelegate, CoreError};
 
 const TYPE_SFTP: &str = "kdeconnect.sftp";
 const TYPE_SFTP_REQUEST: &str = "kdeconnect.sftp.request";
@@ -202,12 +203,16 @@ impl Plugin for Sftp {
             return;
         };
         let state = Arc::clone(&self.state);
+        let reporter = Reporter {
+            delegate: Arc::clone(ctx.delegate),
+            device_id: ctx.device_id.to_owned(),
+        };
         tokio::spawn(async move {
             let mount = match mount(&state, &link).await {
                 Ok(mount) => mount,
                 Err(error) => return request.fail(error),
             };
-            let broken = run(request, &mount).await;
+            let broken = run(request, &mount, &reporter).await;
             if broken {
                 // Forget the session so the next request asks the phone for
                 // a new one.
@@ -263,9 +268,64 @@ async fn mount(state: &Mutex<State>, link: &LinkContext) -> Result<Mount, CoreEr
     }
 }
 
+/// Reports storage downloads and uploads as transfers, so the app shows
+/// them alongside shared files.
+struct Reporter {
+    delegate: Arc<dyn CoreDelegate>,
+    device_id: String,
+}
+
+impl Reporter {
+    /// Starts reporting one file. The returned value reports its progress
+    /// and its end.
+    fn start(&self, file: &std::path::Path, direction: TransferDirection) -> Progress<'_> {
+        let transfer = Transfer {
+            id: share::next_transfer_id(),
+            device_id: self.device_id.clone(),
+            file_name: file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            direction,
+            bytes_done: 0,
+            bytes_total: None,
+            state: TransferState::InProgress,
+        };
+        self.delegate.transfer_updated(&transfer);
+        Progress {
+            reporter: self,
+            transfer,
+        }
+    }
+}
+
+struct Progress<'a> {
+    reporter: &'a Reporter,
+    transfer: Transfer,
+}
+
+impl Progress<'_> {
+    /// The SFTP client already limits how often it calls this.
+    fn advance(&mut self, done: u64, total: Option<u64>) {
+        self.transfer.bytes_done = done;
+        self.transfer.bytes_total = total;
+        self.reporter.delegate.transfer_updated(&self.transfer);
+    }
+
+    fn finish(mut self, result: &Result<(), SftpError>, path: PathBuf) {
+        self.transfer.state = match result {
+            Ok(()) => TransferState::Finished { path },
+            Err(error) => TransferState::Failed {
+                reason: error.to_string(),
+            },
+        };
+        self.reporter.delegate.transfer_updated(&self.transfer);
+    }
+}
+
 /// Carries out `request` and answers it. Returns whether the session turned
 /// out to be dead.
-async fn run(request: Request, mount: &Mount) -> bool {
+async fn run(request: Request, mount: &Mount, reporter: &Reporter) -> bool {
     let session = &mount.session;
     match request {
         Request::Roots { reply } => {
@@ -291,7 +351,11 @@ async fn run(request: Request, mount: &Mount) -> bool {
             local,
             reply,
         } => {
-            let done = session.download(&remote, &local, |_, _| {}).await;
+            let mut progress = reporter.start(&local, TransferDirection::Incoming);
+            let done = session
+                .download(&remote, &local, |done, total| progress.advance(done, total))
+                .await;
+            progress.finish(&done, local);
             let _ = reply.send(done.map_err(|error| storage_error(&error)));
         }
         Request::Upload {
@@ -299,7 +363,11 @@ async fn run(request: Request, mount: &Mount) -> bool {
             remote,
             reply,
         } => {
-            let done = session.upload(&local, &remote, |_, _| {}).await;
+            let mut progress = reporter.start(&local, TransferDirection::Outgoing);
+            let done = session
+                .upload(&local, &remote, |done, total| progress.advance(done, total))
+                .await;
+            progress.finish(&done, local);
             let _ = reply.send(done.map_err(|error| storage_error(&error)));
         }
     }

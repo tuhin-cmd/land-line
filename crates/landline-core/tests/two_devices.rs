@@ -8,7 +8,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use landline_core::discovery::DiscoveryConfig;
-use landline_core::{Config, Core, CoreDelegate, Device, NetworkStatus, PairState, PairingFailure};
+use landline_core::{
+    Config, Core, CoreDelegate, Device, NetworkStatus, PairState, PairingFailure, Transfer,
+    TransferDirection, TransferState,
+};
 
 const WAIT: Duration = Duration::from_secs(15);
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -18,6 +21,8 @@ enum Event {
     Devices(Vec<Device>),
     PairingFailed(PairingFailure),
     Ping(String),
+    Clipboard(String),
+    Transfer(Transfer),
 }
 
 struct Recorder(Sender<Event>);
@@ -33,6 +38,12 @@ impl CoreDelegate for Recorder {
         let _ = self.0.send(Event::Ping(device_id.to_owned()));
     }
     fn network_status_changed(&self, _status: NetworkStatus) {}
+    fn clipboard_received(&self, _device_id: &str, text: &str) {
+        let _ = self.0.send(Event::Clipboard(text.to_owned()));
+    }
+    fn transfer_updated(&self, transfer: &Transfer) {
+        let _ = self.0.send(Event::Transfer(transfer.clone()));
+    }
 }
 
 struct Peer {
@@ -47,6 +58,7 @@ impl Peer {
     fn start(dir: &Path, name: &str, listen_port: u16, send_port: u16) -> Self {
         let mut config = Config::new(dir, name);
         config.broadcast = false;
+        config.download_dir = dir.join("downloads");
         config.discovery = DiscoveryConfig {
             listen_port,
             send_port,
@@ -168,6 +180,41 @@ fn devices_connect_pair_ping_and_remember() {
     assert_eq!(from, mac_id);
     phone.core.send_ping(&mac_id).unwrap();
     mac.wait_for_event(|event| matches!(event, Event::Ping(_)).then_some(()));
+
+    // Clipboard text and a file cross the link through the real plugins.
+    mac.core.send_clipboard("copied on the Mac");
+    let text = phone.wait_for_event(|event| match event {
+        Event::Clipboard(text) => Some(text),
+        _ => None,
+    });
+    assert_eq!(text, "copied on the Mac");
+
+    let contents: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let source = mac_dir.join("holiday photo.jpg");
+    std::fs::write(&source, &contents).unwrap();
+    mac.core.send_files(&phone_id, vec![source]).unwrap();
+    let saved = phone.wait_for_event(|event| match event {
+        Event::Transfer(Transfer {
+            direction: TransferDirection::Incoming,
+            state: TransferState::Finished { path },
+            ..
+        }) => Some(path),
+        Event::Transfer(Transfer {
+            state: TransferState::Failed { reason },
+            ..
+        }) => panic!("the transfer failed: {reason}"),
+        _ => None,
+    });
+    assert_eq!(saved, phone_dir.join("downloads").join("holiday photo.jpg"));
+    assert_eq!(std::fs::read(&saved).unwrap(), contents);
+    mac.wait_for_event(|event| match event {
+        Event::Transfer(Transfer {
+            direction: TransferDirection::Outgoing,
+            state: TransferState::Finished { .. },
+            ..
+        }) => Some(()),
+        _ => None,
+    });
 
     // Restart the Mac side: the phone is listed as paired before it
     // connects, and reconnects under the pinned certificate.

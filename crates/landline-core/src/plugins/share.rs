@@ -106,6 +106,11 @@ const CHUNK: usize = 256 * 1024;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// A transfer ID no other transfer has, for the life of the process.
+pub(crate) fn next_transfer_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Why a running transfer is being stopped from outside.
 #[derive(Debug, Clone, Copy)]
 enum Stop {
@@ -694,7 +699,7 @@ impl Reporter {
         Self {
             delegate: Arc::clone(delegate),
             transfer: Transfer {
-                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                id: next_transfer_id(),
                 device_id: device_id.to_owned(),
                 file_name,
                 direction,

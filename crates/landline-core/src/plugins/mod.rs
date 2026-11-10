@@ -6,10 +6,6 @@
 //! time (payload transfers, SFTP) runs in tasks the plugin spawns, holding
 //! clones of what [`Context::link`] and [`Context::delegate`] provide.
 
-// Parts of this are unused until every plugin is implemented; remove this
-// once they are.
-#![allow(dead_code)]
-
 pub(crate) mod battery;
 pub(crate) mod clipboard;
 pub(crate) mod notifications;
@@ -139,7 +135,6 @@ impl RecentOtps {
 /// What a plugin can see and do during one call.
 pub(crate) struct Context<'a> {
     pub device_id: &'a str,
-    pub device_name: &'a str,
     pub delegate: &'a Arc<dyn CoreDelegate>,
     /// Where received files go. The app can change it at any time.
     pub download_dir: &'a Path,
@@ -278,7 +273,6 @@ pub(crate) mod testing {
 
     impl Harness {
         pub(crate) const DEVICE_ID: &'static str = "0123456789abcdef0123456789abcdef";
-        pub(crate) const DEVICE_NAME: &'static str = "Test Phone";
 
         pub(crate) fn new() -> Self {
             let recorder = Arc::new(Recorder::default());
@@ -327,7 +321,6 @@ pub(crate) mod testing {
         pub(crate) fn ctx(&mut self) -> Context<'_> {
             Context {
                 device_id: Self::DEVICE_ID,
-                device_name: Self::DEVICE_NAME,
                 delegate: &self.delegate,
                 download_dir: &self.download_dir,
                 cache_dir: &self.cache_dir,
