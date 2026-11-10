@@ -29,12 +29,20 @@ LAN only. No cloud, no account, no relay server.
 
 Screen mirroring, remote input, media control, telephony, running over the internet or a VPN, Windows or Linux UI, an own Android app, iPhone support.
 
-## First session: repo setup
+## Status
 
-1. Confirm with the owner that `landline` is the name, then check it is free: `gh repo view <owner>/landline`.
-2. Create the workspace locally (layout below), commit, then `gh repo create landline --private --source=. --remote=origin --push`.
-3. If the push is rejected because of `.github/workflows`, the token lacks the `workflow` scope. Ask the owner to run `gh auth refresh -s workflow`. Do not work around it.
-4. Start Milestone 0.
+| Milestone | State |
+|---|---|
+| M0: skeleton | Built and passing in CI (2026-11-10). One check is still owed: nobody has yet launched the app and seen the version in the menu, because the development Mac has only the Command Line Tools. Install Xcode, run the Build steps in `README.md`, and open the menu to close M0. |
+| M1 onward | Not started |
+
+Notes from M0 that later milestones should know:
+
+- **Repo.** `origin` is the private `tuhin-cmd/landline`. A second remote, `origin-1`, points at a public `tuhin-cmd/land-line` that holds only the initial commit. Nothing is pushed there; the owner should decide whether to delete it.
+- **The xcframework is assembled by hand** in `scripts/build-xcframework.sh` (static library, header, module map, `Info.plist`) instead of with `xcodebuild -create-xcframework`, so the script runs without full Xcode. CI builds the app from it with real Xcode.
+- **UniFFI async and callbacks work (risk 7).** `LandlineCore.echo_after` (async) and `CoreDelegate.heartbeat` (callback from a core thread) are placeholders that prove the pattern, covered by `apple/LandlineKit/Tests`. Async methods spawn onto the core's own runtime and await the join handle, so UniFFI's `tokio` feature is not needed. Remove both placeholders when M1 adds real methods.
+- **`CoreDelegate` is a UniFFI callback interface** (`Box<dyn CoreDelegate>`), which the core holds for its lifetime. A Swift delegate that holds a strong reference to `LandlineCore` creates a retain cycle.
+- **`swift test` needs full Xcode.** With only the Command Line Tools the `Testing` module is not found.
 
 ## Architecture
 
