@@ -107,6 +107,9 @@ struct State {
     /// Icon hashes being downloaded, so a burst of notifications from one app
     /// (the phone attaches the icon to each) fetches it once.
     downloading: HashSet<String>,
+    /// Dismissals sent to the phone that it has not confirmed yet, only so
+    /// the log can say whether the phone acted on them.
+    dismissing: HashSet<String>,
 }
 
 struct Live {
@@ -142,6 +145,7 @@ impl Plugin for Notifications {
         for (id, _) in state.live.drain() {
             ctx.delegate.notification_removed(ctx.device_id, &id);
         }
+        state.dismissing.clear();
     }
 
     fn packet(&mut self, packet: &Packet, ctx: &mut Context<'_>) {
@@ -175,6 +179,8 @@ impl Plugin for Notifications {
             // Removed now rather than when the phone confirms: if the phone
             // no longer has it, no confirmation comes.
             state.live.remove(&id);
+            debug!("asked the phone to dismiss a notification");
+            state.dismissing.insert(id.clone());
             ctx.delegate.notification_removed(ctx.device_id, &id);
         }
     }
@@ -185,6 +191,8 @@ impl Notifications {
         let mut state = lock(&self.state);
         if state.live.remove(id).is_some() {
             ctx.delegate.notification_removed(ctx.device_id, id);
+        } else if state.dismissing.remove(id) {
+            debug!("the phone confirmed the dismissal");
         } else {
             trace!(id, "removal of a notification that was never posted");
         }
