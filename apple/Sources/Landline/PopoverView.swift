@@ -5,6 +5,14 @@ import SwiftUI
 /// The menu bar panel, laid out like the system's Wi-Fi and Bluetooth panels.
 struct PopoverView: View {
     @Environment(AppModel.self) private var model
+    @State private var contentHeight: CGFloat = 200
+
+    /// Leaves room for the header and footer below the menu bar on a small
+    /// screen, and stops short of a full-height panel on a large one.
+    static var maxContentHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(240, min(560, screen - 140))
+    }
 
     var body: some View {
         let sections = model.sections
@@ -13,36 +21,14 @@ struct PopoverView: View {
                 .padding(.horizontal, 6)
                 .padding(.bottom, 8)
 
-            VStack(alignment: .leading, spacing: 10) {
-                if let notice = model.notice {
-                    NoticeBanner(notice: notice) { model.notice = nil }
-                }
-                if let code = model.latestCode {
-                    CodeCard(
-                        code: code,
-                        onCopy: { model.copyCode(code.code) },
-                        onDismiss: { model.clearLatestCode() })
-                }
-                if let error = model.startError {
-                    ProblemView(
-                        symbol: "exclamationmark.triangle",
-                        title: "Landline couldn’t start",
-                        message: error,
-                        buttonTitle: "Try Again"
-                    ) { model.start() }
-                } else {
-                    deviceContent(sections)
-                    let notifications = model.listedNotifications
-                    if !notifications.isEmpty {
-                        NotificationList(items: notifications)
-                    }
-                }
+            ScrollView(.vertical) {
+                content(sections)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
-            .animation(.default, value: model.devices)
-            .animation(.default, value: model.notice)
-            .animation(.default, value: model.latestCode)
-            .animation(.default, value: model.listedNotifications)
-            .animation(.default, value: model.confirmingUnpair)
+            .scrollBounceBehavior(.basedOnSize)
+            // As tall as the content up to a limit, then scrolling: a list
+            // of many devices or notifications must not run off the screen.
+            .frame(height: min(contentHeight, Self.maxContentHeight))
 
             Divider()
                 .padding(.vertical, 8)
@@ -52,6 +38,44 @@ struct PopoverView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
         .frame(width: 340)
+    }
+
+    private func content(_ sections: DeviceSections) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let notice = model.notice {
+                NoticeBanner(notice: notice) { model.notice = nil }
+            }
+            if let code = model.latestCode {
+                CodeCard(
+                    code: code,
+                    onCopy: { model.copyCode(code.code) },
+                    onDismiss: { model.clearLatestCode() })
+            }
+            if let error = model.startError {
+                ProblemView(
+                    symbol: "exclamationmark.triangle",
+                    title: "Landline couldn’t start",
+                    message: error,
+                    buttonTitle: "Try Again"
+                ) { model.start() }
+            } else {
+                deviceContent(sections)
+                let transfers = model.listedTransfers
+                if !transfers.isEmpty {
+                    TransferSection(entries: transfers)
+                }
+                let notifications = model.listedNotifications
+                if !notifications.isEmpty {
+                    NotificationList(items: notifications)
+                }
+            }
+        }
+        .animation(.default, value: model.devices)
+        .animation(.default, value: model.notice)
+        .animation(.default, value: model.latestCode)
+        .animation(.default, value: model.listedNotifications)
+        .animation(.default, value: model.confirmingUnpair)
+        .animation(.default, value: model.listedTransfers.map(\.id))
     }
 
     private var header: some View {
@@ -84,13 +108,17 @@ struct PopoverView: View {
         }
 
         switch model.networkStatus {
-        case .blocked:
+        case .blocked where sections.isEmpty:
             ProblemView(
                 symbol: "lock.shield",
                 title: "Local Network access is off",
                 message: "Landline finds your phone over Wi-Fi, which macOS allows only with permission. Turn on Landline in Privacy & Security > Local Network.",
                 buttonTitle: "Open System Settings",
                 action: SystemSettings.openLocalNetworkPrivacy)
+        case .blocked:
+            // The phone can still connect to the Mac, so the list can look
+            // healthy while everything the Mac starts fails.
+            BlockedWarning()
         case .offline:
             ProblemView(
                 symbol: "wifi.slash",
@@ -253,6 +281,31 @@ private struct ProblemView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+}
+
+/// Local Network permission is missing but devices are listed: say what
+/// does not work, compactly, above the list.
+private struct BlockedWarning: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lock.shield.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Local Network access is off")
+                    .font(.subheadline.weight(.semibold))
+                Text("macOS doesn’t let this Mac connect to devices on your network. Until you turn on Landline in Local Network settings, files can’t be sent or browsed, and devices may not reconnect.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open System Settings", action: SystemSettings.openLocalNetworkPrivacy)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
