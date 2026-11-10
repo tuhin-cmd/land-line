@@ -1,3 +1,4 @@
+import Foundation
 import LandlineKit
 import Testing
 
@@ -9,11 +10,12 @@ func device(
     kind: DeviceKind = .phone,
     reachable: Bool = true,
     _ pairState: PairState = .notPaired,
-    key: String? = nil
+    key: String? = nil,
+    battery: Battery? = nil
 ) -> Device {
     Device(
         id: id ?? "id-\(name)", name: name, kind: kind, reachable: reachable,
-        pairState: pairState, verificationKey: key, battery: nil)
+        pairState: pairState, verificationKey: key, battery: battery)
 }
 
 @Suite struct RowContentTests {
@@ -51,6 +53,40 @@ func device(
     ])
     func everyKindHasASymbol(kind: DeviceKind, symbol: String) {
         #expect(DeviceRowContent(device("A", kind: kind)).symbol == symbol)
+    }
+}
+
+@Suite struct BatteryTests {
+    @Test(arguments: [
+        (UInt8(100), false, "100%", "battery.100percent", false),
+        (82, false, "82%", "battery.75percent", false),
+        (50, false, "50%", "battery.50percent", false),
+        (21, false, "21%", "battery.25percent", false),
+        (20, false, "20%", "battery.25percent", true),
+        (5, false, "5%", "battery.0percent", true),
+        (5, true, "5%", "battery.100percent.bolt", false),
+    ])
+    func badge(charge: UInt8, charging: Bool, text: String, symbol: String, low: Bool) {
+        let badge = BatteryBadge(Battery(charge: charge, charging: charging))
+        #expect(badge.text == text)
+        #expect(badge.symbol == symbol)
+        #expect(badge.isLow == low)
+    }
+
+    @Test func spokenWithChargingState() {
+        #expect(BatteryBadge(Battery(charge: 40, charging: true)).accessibilityLabel
+            == "Battery 40 percent, charging")
+    }
+
+    @Test func outOfRangeChargeIsClamped() {
+        #expect(BatteryBadge(Battery(charge: 250, charging: false)).text == "100%")
+    }
+
+    @Test func shownOnlyWhileConnected() {
+        let battery = Battery(charge: 60, charging: false)
+        #expect(DeviceRowContent(device("A", .paired, battery: battery)).battery?.text == "60%")
+        #expect(DeviceRowContent(device("A", reachable: false, .paired, battery: battery)).battery == nil)
+        #expect(DeviceRowContent(device("A", .paired)).battery == nil)
     }
 }
 
@@ -164,5 +200,19 @@ func device(
         // macOS adds its own arguments (such as -NSDocumentRevisionsDebugMode)
         // when launched from some tools; they must not switch modes.
         #expect(LaunchMode(arguments: ["Landline", "-NSRequiresAquaSystemAppearance", "YES"]) == .live)
+    }
+}
+
+@Suite struct NotificationTimeTests {
+    @Test func compactAge() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func age(_ seconds: Double) -> String {
+            NotificationTime.short(Int64((now.timeIntervalSince1970 - seconds) * 1000), now: now)
+        }
+        #expect(age(5) == "now")
+        #expect(age(-30) == "now")  // phone clock slightly ahead
+        #expect(age(5 * 60) == "5m")
+        #expect(age(3 * 3600 + 59) == "3h")
+        #expect(age(2 * 86_400) == "2d")
     }
 }

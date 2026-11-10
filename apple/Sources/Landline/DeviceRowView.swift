@@ -65,22 +65,32 @@ struct DeviceRowView: View {
 
     @ViewBuilder
     private func status(_ content: DeviceRowContent) -> some View {
-        let pinged = model.recentPings.contains(device.id) && content.state == .connected
+        let connected = content.state == .connected
+        let pinged = model.recentPings.contains(device.id) && connected
+        let clipboard = model.recentClipboard.contains(device.id) && connected && !pinged
         HStack(spacing: 3) {
             if pinged {
                 Image(systemName: "hand.wave.fill")
                     .foregroundStyle(Color.accentColor)
+            } else if clipboard {
+                Image(systemName: "doc.on.clipboard.fill")
+                    .foregroundStyle(Color.accentColor)
             }
-            Text(content.status)
+            Text(clipboard ? "Clipboard received" : content.status)
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .animation(.default, value: pinged)
+        .animation(.default, value: clipboard)
     }
 
     @ViewBuilder
     private func trailingControls(_ content: DeviceRowContent) -> some View {
         HStack(spacing: 4) {
+            if let battery = content.battery {
+                BatteryView(battery: battery)
+                    .padding(.trailing, 2)
+            }
             if content.actions.contains(.pair) {
                 Button("Pair") { model.perform(.pair, on: device.id) }
                     .controlSize(.small)
@@ -136,5 +146,23 @@ struct DeviceRowView: View {
             }
             .controlSize(.small)
         }
+    }
+}
+
+private struct BatteryView: View {
+    let battery: BatteryBadge
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(battery.text)
+                .monospacedDigit()
+            Image(systemName: battery.symbol)
+                .foregroundStyle(battery.isLow ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(battery.accessibilityLabel)
+        .help(battery.accessibilityLabel)
     }
 }

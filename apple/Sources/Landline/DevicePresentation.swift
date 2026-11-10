@@ -38,6 +38,8 @@ struct DeviceRowContent: Equatable {
     let actions: [RowAction]
     /// The verification key in blocks of four, present while pairing is pending.
     let keyGroups: [String]?
+    /// Only while connected; an offline phone's last charge would mislead.
+    let battery: BatteryBadge?
 
     init(_ device: Device, pingReceived: Bool = false) {
         let state = RowState(device)
@@ -46,6 +48,7 @@ struct DeviceRowContent: Equatable {
         symbol = device.kind.symbol
         self.state = state
         keyGroups = device.verificationKey.map(VerificationKey.groups)
+        battery = state == .connected ? device.battery.map(BatteryBadge.init) : nil
 
         switch state {
         case .connected:
@@ -67,6 +70,31 @@ struct DeviceRowContent: Equatable {
             status = "Wants to pair"
             actions = [.reject, .accept]
         }
+    }
+}
+
+/// The phone's charge, shown small at the end of its row the way the
+/// Bluetooth panel shows a headset's.
+struct BatteryBadge: Equatable {
+    let text: String
+    let symbol: String
+    /// Low and not charging: worth a colour.
+    let isLow: Bool
+    let accessibilityLabel: String
+
+    init(_ battery: Battery) {
+        let charge = Int(min(battery.charge, 100))
+        text = "\(charge)%"
+        isLow = charge <= 20 && !battery.charging
+        symbol = switch charge {
+        case _ where battery.charging: "battery.100percent.bolt"
+        case 88...: "battery.100percent"
+        case 63...: "battery.75percent"
+        case 38...: "battery.50percent"
+        case 13...: "battery.25percent"
+        default: "battery.0percent"
+        }
+        accessibilityLabel = battery.charging ? "Battery \(charge) percent, charging" : "Battery \(charge) percent"
     }
 }
 

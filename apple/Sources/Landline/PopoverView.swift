@@ -17,6 +17,12 @@ struct PopoverView: View {
                 if let notice = model.notice {
                     NoticeBanner(notice: notice) { model.notice = nil }
                 }
+                if let code = model.latestCode {
+                    CodeCard(
+                        code: code,
+                        onCopy: { model.copyCode(code.code) },
+                        onDismiss: { model.clearLatestCode() })
+                }
                 if let error = model.startError {
                     ProblemView(
                         symbol: "exclamationmark.triangle",
@@ -26,10 +32,16 @@ struct PopoverView: View {
                     ) { model.start() }
                 } else {
                     deviceContent(sections)
+                    let notifications = model.listedNotifications
+                    if !notifications.isEmpty {
+                        NotificationList(items: notifications)
+                    }
                 }
             }
             .animation(.default, value: model.devices)
             .animation(.default, value: model.notice)
+            .animation(.default, value: model.latestCode)
+            .animation(.default, value: model.listedNotifications)
             .animation(.default, value: model.confirmingUnpair)
 
             Divider()
@@ -250,4 +262,5 @@ enum SystemSettings {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!
         NSWorkspace.shared.open(url)
     }
+
 }

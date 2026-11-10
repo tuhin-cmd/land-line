@@ -373,6 +373,10 @@ final class AppModel {
         let code = ReceivedCode(code: otp.code, source: otp.source, deviceId: deviceId, date: .now, copied: copied)
         latestCode = code
         recentCodes = recentCodes.filter { !$0.isExpired } + [code]
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.codeLifetime))
+            if self?.latestCode?.date == code.date { self?.latestCode = nil }
+        }
 
         // The message the code came from may already be showing as a phone
         // notification; the code's banner replaces it.
