@@ -118,6 +118,8 @@ struct DeviceEntry {
     usable: bool,
     status: DeviceStatus,
     recent_otps: RecentOtps,
+    /// Where the device was last reached, for announcing straight to it.
+    last_address: Option<IpAddr>,
 }
 
 impl DeviceEntry {
@@ -142,6 +144,7 @@ impl DeviceEntry {
             usable: false,
             status: DeviceStatus::default(),
             recent_otps: RecentOtps::default(),
+            last_address: None,
         }
     }
 }
@@ -224,17 +227,16 @@ impl Manager {
                 device.device_id.clone(),
                 (device.certificate.clone(), protocol_version),
             );
-            devices.insert(
-                device.device_id.clone(),
-                DeviceEntry::new(
-                    device.name.clone(),
-                    DeviceType::parse(&device.device_type),
-                    protocol_version,
-                    device.certificate.clone(),
-                    public_key,
-                    true,
-                ),
+            let mut entry = DeviceEntry::new(
+                device.name.clone(),
+                DeviceType::parse(&device.device_type),
+                protocol_version,
+                device.certificate.clone(),
+                public_key,
+                true,
             );
+            entry.last_address = device.last_address;
+            devices.insert(device.device_id.clone(), entry);
         }
 
         let manager = Self {
@@ -401,6 +403,20 @@ impl Manager {
         }
     }
 
+    /// Sends our identity straight to each paired device that is not
+    /// connected, at the address it last had.
+    async fn announce_to_known(&mut self) {
+        let addresses: Vec<IpAddr> = self
+            .devices
+            .values()
+            .filter(|entry| entry.pairing.is_paired() && entry.link.is_none())
+            .filter_map(|entry| entry.last_address)
+            .collect();
+        for address in addresses {
+            self.announce_to(address).await;
+        }
+    }
+
     /// Our identity as the datagram peers expect, naming the TCP port they
     /// should connect back to.
     fn datagram(&self, tcp_port: u16) -> Vec<u8> {
@@ -445,6 +461,7 @@ impl Manager {
             NetworkStatus::Offline
         };
         self.set_network_status(status);
+        self.announce_to_known().await;
     }
 
     async fn announce_to(&mut self, address: IpAddr) {
@@ -573,6 +590,7 @@ impl Manager {
         entry.protocol_version = identity.protocol_version;
         entry.certificate = certificate;
         entry.public_key = public_key;
+        entry.last_address = Some(address.ip());
 
         self.next_link += 1;
         let id = self.next_link;
@@ -843,6 +861,7 @@ impl Manager {
             name: entry.name.clone(),
             device_type: entry.device_type.as_str().to_owned(),
             protocol_version: u32::try_from(entry.protocol_version).unwrap_or_default(),
+            last_address: entry.last_address,
         };
         self.shared
             .pinned

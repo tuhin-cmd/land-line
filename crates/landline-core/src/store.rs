@@ -283,6 +283,10 @@ pub struct TrustedDevice {
     pub name: String,
     pub device_type: String,
     pub protocol_version: u32,
+    /// Where the device was last reached. Announcements also go straight
+    /// there, because a phone with its screen off often ignores broadcasts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_address: Option<std::net::IpAddr>,
 }
 
 impl fmt::Debug for TrustedDevice {
@@ -707,6 +711,7 @@ mod tests {
             name: name.into(),
             device_type: "phone".into(),
             protocol_version: 8,
+            last_address: None,
         }
     }
 
