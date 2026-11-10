@@ -9,7 +9,6 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
-directories = "6.0.0"
 getrandom = "0.4.3"
 if-addrs = "0.15.0"
 mdns-sd = "0.21.7"
