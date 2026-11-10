@@ -34,7 +34,7 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 
 | Milestone | State |
 |---|---|
-| M0: skeleton | Built and passing locally (2026-11-10): Rust checks, Swift bridge tests, and `scripts/build-app.sh`, which produces a signed `build/Landline.app` that launches. One check is still owed: the owner clicking the menu bar icon and seeing the core version, because the session that built it had no way to look at the screen. |
+| M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
 | M1 onward | Not started |
 
 Notes from M0 that later milestones should know:
