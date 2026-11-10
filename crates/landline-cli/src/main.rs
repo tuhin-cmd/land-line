@@ -15,7 +15,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use clap::{Parser, Subcommand};
 use landline_core::{
-    Config, Core, CoreDelegate, Device, NetworkStatus, Packet, PairState, PairingFailure,
+    Config, Core, CoreDelegate, Device, NetworkStatus, OtpCode, Packet, PairState, PairingFailure,
+    PhoneNotification, SmsMessage, Transfer, TransferState,
 };
 
 #[derive(Parser)]
@@ -72,6 +73,35 @@ enum Command {
     /// Print every event and every packet from paired devices as JSON lines,
     /// until interrupted. Packets can contain private content.
     Listen,
+    /// Send files to a paired device.
+    Send {
+        /// Device ID, or the start of its name.
+        device: String,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Offer text to the clipboard of every connected paired device.
+    Clipboard { text: String },
+    /// List a folder on the device, or its storage roots if no path is given.
+    Ls {
+        /// Device ID, or the start of its name.
+        device: String,
+        path: Option<String>,
+    },
+    /// Copy a file from the device.
+    Get {
+        /// Device ID, or the start of its name.
+        device: String,
+        remote: String,
+        local: PathBuf,
+    },
+    /// Copy a file to the device.
+    Put {
+        /// Device ID, or the start of its name.
+        device: String,
+        local: PathBuf,
+        remote: String,
+    },
 }
 
 enum Event {
@@ -80,6 +110,9 @@ enum Event {
     Ping(String),
     Network(NetworkStatus),
     Packet(String, String),
+    /// Everything else, already rendered for `listen`.
+    Other(serde_json::Value),
+    Transfer(Transfer),
 }
 
 struct Forward(Sender<Event>);
@@ -103,6 +136,48 @@ impl CoreDelegate for Forward {
         let _ = self
             .0
             .send(Event::Packet(device_id.to_owned(), packet.to_line()));
+    }
+    fn notification_posted(&self, device_id: &str, n: &PhoneNotification) {
+        self.other(serde_json::json!({
+            "event": "notification", "device": device_id, "id": n.id, "app": n.app_name,
+            "title": n.title, "text": n.text, "silent": n.silent, "dismissable": n.dismissable,
+            "icon": n.icon_path,
+        }));
+    }
+    fn notification_removed(&self, device_id: &str, notification_id: &str) {
+        self.other(serde_json::json!({
+            "event": "notification_removed", "device": device_id, "id": notification_id,
+        }));
+    }
+    fn sms_received(&self, device_id: &str, message: &SmsMessage) {
+        self.other(serde_json::json!({
+            "event": "sms", "device": device_id, "sender": message.sender, "body": message.body,
+        }));
+    }
+    fn otp_detected(&self, device_id: &str, otp: &OtpCode) {
+        self.other(serde_json::json!({
+            "event": "otp", "device": device_id, "code": otp.code, "source": otp.source,
+        }));
+    }
+    fn clipboard_received(&self, device_id: &str, text: &str) {
+        self.other(serde_json::json!({
+            "event": "clipboard", "device": device_id, "text": text,
+        }));
+    }
+    fn transfer_updated(&self, transfer: &Transfer) {
+        let _ = self.0.send(Event::Transfer(transfer.clone()));
+    }
+    fn text_shared(&self, device_id: &str, text: &str) {
+        self.other(serde_json::json!({ "event": "text", "device": device_id, "text": text }));
+    }
+    fn url_shared(&self, device_id: &str, url: &str) {
+        self.other(serde_json::json!({ "event": "url", "device": device_id, "url": url }));
+    }
+}
+
+impl Forward {
+    fn other(&self, event: serde_json::Value) {
+        let _ = self.0.send(Event::Other(event));
     }
 }
 
@@ -163,6 +238,19 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Unpair { device } => session.unpair(&device),
         Command::Ping { device } => session.ping(&device),
         Command::Listen => session.listen(),
+        Command::Send { device, files } => session.send_files(&device, files),
+        Command::Clipboard { text } => session.clipboard(&text),
+        Command::Ls { device, path } => session.ls(&device, path.as_deref()),
+        Command::Get {
+            device,
+            remote,
+            local,
+        } => session.get(&device, &remote, local),
+        Command::Put {
+            device,
+            local,
+            remote,
+        } => session.put(&device, local, &remote),
     }
 }
 
@@ -279,8 +367,7 @@ impl Session {
     }
 
     fn ping(&self, wanted: &str) -> Result<(), Failure> {
-        let ready = |d: &Device| d.reachable && d.pair_state == PairState::Paired;
-        let device = self.find(wanted, ready)?;
+        let device = self.find(wanted, usable)?;
         self.core.send_ping(&device.id)?;
         // The write happens on a core thread; do not exit before it does.
         std::thread::sleep(Duration::from_millis(500));
@@ -308,10 +395,100 @@ impl Session {
                     let packet: serde_json::Value = serde_json::from_str(&line)?;
                     serde_json::json!({ "event": "packet", "device": device, "packet": packet })
                 }
+                Event::Other(event) => event,
+                Event::Transfer(transfer) => transfer_json(&transfer),
             };
             writeln!(out, "{line}")?;
             out.flush()?;
         }
+    }
+
+    fn send_files(&self, wanted: &str, files: Vec<PathBuf>) -> Result<(), Failure> {
+        let device = self.find(wanted, usable)?;
+        let mut left = files.len();
+        self.core.send_files(&device.id, files)?;
+        let mut failed = false;
+        while left > 0 {
+            match self.events.recv()? {
+                Event::Transfer(transfer) => match &transfer.state {
+                    TransferState::InProgress => {}
+                    TransferState::Finished { .. } => {
+                        println!("Sent {}.", transfer.file_name);
+                        left -= 1;
+                    }
+                    TransferState::Failed { reason } => {
+                        eprintln!("landline: {}: {reason}", transfer.file_name);
+                        failed = true;
+                        left -= 1;
+                    }
+                    TransferState::Cancelled => {
+                        eprintln!("landline: {}: cancelled", transfer.file_name);
+                        failed = true;
+                        left -= 1;
+                    }
+                },
+                Event::Devices(devices)
+                    if !devices.iter().any(|d| d.id == device.id && usable(d)) =>
+                {
+                    return Err("the device went away".into());
+                }
+                _ => {}
+            }
+        }
+        if failed {
+            return Err("not every file was sent".into());
+        }
+        Ok(())
+    }
+
+    fn clipboard(&self, text: &str) -> Result<(), Failure> {
+        // Wait for any paired device so there is someone to send to.
+        let deadline = Instant::now() + FIND_TIMEOUT;
+        let mut devices = self.core.devices();
+        while !devices.iter().any(usable) {
+            match self.next_event(deadline) {
+                Some(Event::Devices(list)) => devices = list,
+                Some(_) => {}
+                None => return Err("no paired device is connected".into()),
+            }
+        }
+        self.core.send_clipboard(text);
+        // The write happens on a core thread; do not exit before it does.
+        std::thread::sleep(Duration::from_millis(500));
+        println!("Sent to the device clipboard.");
+        Ok(())
+    }
+
+    fn ls(&self, wanted: &str, path: Option<&str>) -> Result<(), Failure> {
+        let device = self.find(wanted, usable)?;
+        match path {
+            None => {
+                for root in block_on(self.core.storage_roots(&device.id))?? {
+                    println!("{}\t{}", root.path, root.name);
+                }
+            }
+            Some(path) => {
+                for entry in block_on(self.core.list_dir(&device.id, path))?? {
+                    let kind = if entry.is_dir { "d" } else { "-" };
+                    println!("{kind} {:>12}  {}", entry.size, entry.name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn get(&self, wanted: &str, remote: &str, local: PathBuf) -> Result<(), Failure> {
+        let device = self.find(wanted, usable)?;
+        block_on(self.core.download(&device.id, remote, &local))??;
+        println!("Saved {}.", local.display());
+        Ok(())
+    }
+
+    fn put(&self, wanted: &str, local: PathBuf, remote: &str) -> Result<(), Failure> {
+        let device = self.find(wanted, usable)?;
+        block_on(self.core.upload(&device.id, local, remote))??;
+        println!("Uploaded to {remote}.");
+        Ok(())
     }
 
     /// Waits for the one device matching `wanted` (an ID, or the start of a
@@ -348,6 +525,33 @@ impl Session {
         let left = deadline.saturating_duration_since(Instant::now());
         self.events.recv_timeout(left).ok()
     }
+}
+
+/// Paired and connected: ready for anything beyond pairing.
+fn usable(device: &Device) -> bool {
+    device.reachable && device.pair_state == PairState::Paired
+}
+
+/// Runs one of the core's async calls to completion. Its work happens on the
+/// core's own runtime; this one only waits.
+fn block_on<T>(future: impl Future<Output = T>) -> Result<T, Failure> {
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    Ok(runtime.block_on(future))
+}
+
+fn transfer_json(transfer: &Transfer) -> serde_json::Value {
+    let (state, detail) = match &transfer.state {
+        TransferState::InProgress => ("in_progress", None),
+        TransferState::Finished { path } => ("finished", Some(path.display().to_string())),
+        TransferState::Failed { reason } => ("failed", Some(reason.clone())),
+        TransferState::Cancelled => ("cancelled", None),
+    };
+    serde_json::json!({
+        "event": "transfer", "id": transfer.id, "device": transfer.device_id,
+        "file": transfer.file_name, "direction": format!("{:?}", transfer.direction),
+        "done": transfer.bytes_done, "total": transfer.bytes_total,
+        "state": state, "detail": detail,
+    })
 }
 
 fn matches(device: &Device, wanted: &str) -> bool {

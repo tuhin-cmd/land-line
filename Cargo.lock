@@ -550,6 +550,7 @@ dependencies = [
  "directories",
  "landline-core",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
