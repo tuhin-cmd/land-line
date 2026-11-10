@@ -35,7 +35,8 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 | Milestone | State |
 |---|---|
 | M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
-| M1 onward | Not started |
+| M1: discovery, TLS, pairing | Core and CLI built (2026-11-10): `landline discover`, `pair`, `unpair`, `ping`, `listen`. Two cores connect, pair, ping and reconnect over loopback in `crates/landline-core/tests/two_devices.rs`, and TLS interoperates with OpenSSL at TLS 1.2. **Not yet tried against the phone**, which is the exit check. The Swift device list and pairing UI are not built yet. |
+| M2 onward | Not started |
 
 Notes from M0 that later milestones should know:
 
@@ -44,7 +45,7 @@ Notes from M0 that later milestones should know:
 - **Disk.** The Mac had about 6 GB free during M0. Scripts build a debug app for the host architecture by default; `--release --universal` is for CI and releases. Debug info for dependencies is off in the dev profile to keep `target/` small.
 - **The ad-hoc signature changes with every build,** so macOS may ask again for permissions (Local Network, notifications) after a rebuild. A stable signing identity fixes that; a self-signed certificate would do before Developer ID.
 - **The xcframework is assembled by hand** in `scripts/build-xcframework.sh` (static library, header, module map, `Info.plist`) instead of with `xcodebuild -create-xcframework`.
-- **UniFFI async and callbacks work (risk 7).** `LandlineCore.echo_after` (async) and `CoreDelegate.heartbeat` (callback from a core thread) are placeholders that prove the pattern, covered by `apple/Tests`. Async methods spawn onto the core's own runtime and await the join handle, so UniFFI's `tokio` feature is not needed. Remove both placeholders when M1 adds real methods.
+- **UniFFI async and callbacks work (risk 7).** M0 proved an async method and a callback from a core thread; both placeholders are gone now. Async methods can spawn onto the core's own runtime and await the join handle, so UniFFI's `tokio` feature is not needed. The M1 surface is synchronous: commands return at once and results arrive through `CoreDelegate`.
 - **`CoreDelegate` is a UniFFI callback interface** (`Box<dyn CoreDelegate>`), which the core holds for its lifetime. A Swift delegate that holds a strong reference to `LandlineCore` creates a retain cycle.
 
 ## Architecture
@@ -125,17 +126,21 @@ The core runs its own tokio runtime. Delegate callbacks arrive on core threads; 
 
 ## Protocol notes
 
-**These are written from memory. Treat every line as a claim to verify** against the Valent protocol reference (clearest write-up) and the `KDE/kdeconnect-android` and `KDE/kdeconnect-kde` sources before building on it.
+Checked against the `KDE/kdeconnect-android` source (commit `207dcdb`, 2026-11-08) and, where noted, `KDE/kdeconnect-kde`. Packet types for M2 onward (the table below) are still from memory.
 
-**Packets.** One JSON object per line, newline terminated: `{"id": <ms since epoch>, "type": "kdeconnect.<name>", "body": {…}}`. Optional `payloadSize` (-1 means unknown) and `payloadTransferInfo` (`{"port": N}`). Some peers send `id` as a string, so accept both.
+**Packets.** One JSON object per line, newline terminated: `{"id": <ms since epoch>, "type": "kdeconnect.<name>", "body": {…}}`. Optional `payloadSize` (-1 means unknown) and `payloadTransferInfo` (`{"port": N}`); both are omitted, never `null`, when there is no payload, and a packet with `payloadSize` but no `payloadTransferInfo` is rejected. Peers read body values leniently (numbers as strings and the reverse), so we do too.
 
-**Discovery.** Each device broadcasts its identity packet over UDP to port 1716. Newer versions also advertise over mDNS as `_kdeconnect._udp`. Identity body: `deviceId`, `deviceName`, `deviceType`, `protocolVersion`, `incomingCapabilities`, `outgoingCapabilities`, `tcpPort`.
+**Identity.** Body: `deviceId`, `deviceName`, `deviceType` (phone, tablet, desktop, laptop, tv), `protocolVersion`, `incomingCapabilities`, `outgoingCapabilities`, plus `tcpPort` in the UDP copy, and `targetDeviceId` and `targetProtocolVersion` in the plaintext TCP copy. A device ID is 32 to 38 characters of `[a-zA-Z0-9_-]`. A device name loses the characters `"',;:.!?()[]<>` and is cut to 32.
 
-**Link setup, including the role inversion.** The device that *receives* a UDP identity opens a TCP connection to the sender's `tcpPort` (range 1716-1764) and writes its own identity as one plaintext line. TLS then starts with the roles reversed: **the side that opened the TCP connection acts as the TLS server**, and the side that accepted it acts as the TLS client. In protocol 8, both sides send their identity again inside the TLS session, and only that copy is trusted.
+**Discovery.** Each device sends its identity as a UDP datagram to port 1716 on start and on network change, and advertises over mDNS as `_kdeconnect._udp` (instance name = device ID; TXT `id`, `name`, `type`, `protocol`). The Android app answers an mDNS sighting by sending its UDP identity to that host rather than connecting. It ignores anything from a non-private address, and a second identity from the same device or IP within a second. On macOS 26 a send to 255.255.255.255 fails with "No route to host" even with the Local Network permission; the per-interface directed broadcast is what works.
 
-**Certificates and pairing.** Each device has a long-lived self-signed certificate whose common name is its device ID. Trust is on first use: pairing pins the peer's certificate, and later connections must present the same one. Protocol 8 constrains the device ID format (UUID-like, underscores rather than hyphens) and adds a timestamp to `kdeconnect.pair`. Both sides show a short verification key derived from the two public keys. Get the exact derivation from source.
+**Link setup, including the role inversion.** The device that *receives* a UDP identity opens a TCP connection to the sender's `tcpPort` (1716-1764) and writes its own identity as one plaintext line. TLS then starts with the roles reversed: **the side that opened the TCP connection is the TLS server**. In protocol 8, both sides then send their identity again inside the TLS session and only that copy is trusted; the device ID and protocol version must match the plaintext copy. A paired device offering an older protocol version than it used before is refused. There is no keepalive packet: a dead peer is noticed only through TCP keepalive, and a link comes back only when one side announces again.
 
-**Payloads.** The sender listens on a port in 1739-1764 and names it in `payloadTransferInfo`. The receiver connects to it over TLS and reads `payloadSize` bytes. Check which side is the TLS server here; it may not follow the inverted rule above.
+**Certificates.** Each device has a long-lived self-signed certificate: subject `CN=<device id>, OU=KDE Connect, O=KDE`, EC P-256 on current Android installs (RSA 2048 on old ones), no extensions. Trust is on first use: before pairing any certificate is accepted; pairing pins the peer's certificate and later connections must present exactly it. The Android app only speaks TLS 1.2. Both sides present a certificate in every handshake. We also require the certificate's common name to equal the claimed device ID, as the desktop app does.
+
+**Pairing.** Request: `kdeconnect.pair` `{"pair": true, "timestamp": <unix seconds>}`. Accept: `{"pair": true}`. Reject, cancel or unpair: `{"pair": false}`. The requester gives up after 30 s, the asked side after 25 s. The timestamp must be within 30 minutes of the receiver's clock. A device that receives any other packet from an unpaired peer answers with `{"pair": false}`, which is how two sides that disagree get back in step. **Verification key:** SHA-256 over the two certificates' `SubjectPublicKeyInfo` DER (the bytewise larger one first) followed by the timestamp in decimal ASCII; the first 8 hex characters, uppercased.
+
+**Payloads.** The sender listens on a port from 1739 up and names it in `payloadTransferInfo`. The receiver connects to it. Here the roles are *not* inverted: the sender (TCP listener) is the TLS server.
 
 **Packet types by feature.**
 

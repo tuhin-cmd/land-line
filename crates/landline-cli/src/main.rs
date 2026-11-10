@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
 use clap::{Parser, Subcommand};
 use landline_core::{
     Config, Core, CoreDelegate, Device, NetworkStatus, Packet, PairState, PairingFailure,
@@ -126,9 +130,10 @@ fn init_logging(verbose: u8) {
         2 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_writer(std::io::stderr)
+    // Only the core's own events: its dependencies are far too chatty.
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(Targets::new().with_target("landline_core", level))
         .init();
 }
 

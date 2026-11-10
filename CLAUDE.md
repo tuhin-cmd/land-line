@@ -6,7 +6,7 @@ macOS menu bar app that links to an Android phone through the stock KDE Connect 
 
 ```sh
 cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
-cargo run -p landline-cli -- heartbeat   # drive the core headlessly
+cargo run -p landline-cli -- discover    # drive the core headlessly; also pair, unpair, ping, listen (-vv for logs)
 
 ./scripts/build-app.sh --run             # Rust core + Swift app -> build/Landline.app, then relaunch it
 ./scripts/test-swift.sh                  # Swift tests; needs the xcframework from a build first
