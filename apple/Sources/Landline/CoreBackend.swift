@@ -101,6 +101,8 @@ final class CoreBackend: DeviceBackend {
     static func defaultConfig(downloadDir: String?) throws -> CoreConfig {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        // A fixed name rather than the bundle ID, which has changed once
+        // already: pairings must outlive that, and the CLI looks here too.
         let dataDir = support.appendingPathComponent("io.github.tuhin-cmd.landline", isDirectory: true)
         return CoreConfig(dataDir: dataDir.path, deviceName: computerName(), downloadDir: downloadDir)
     }
