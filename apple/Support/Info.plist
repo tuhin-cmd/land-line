@@ -24,5 +24,11 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kdeconnect._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Landline finds your phone on this Wi-Fi network and connects to it directly, without going through the internet.</string>
 </dict>
 </plist>
