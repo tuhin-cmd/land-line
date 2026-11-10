@@ -15,3 +15,9 @@ Needs Rust (via rustup) and the Xcode Command Line Tools (`xcode-select --instal
 ```
 
 This builds `build/Landline.app` and launches it. Look for the phone icon in the menu bar.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Landline speaks the KDE Connect protocol but is a separate project, not affiliated with KDE.

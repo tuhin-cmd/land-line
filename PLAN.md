@@ -24,7 +24,7 @@ LAN only. No cloud, no account, no relay server.
 | Minimum macOS | 14 | `MenuBarExtra` and `@Observable` |
 | Build | **SwiftPM plus shell scripts; no Xcode project** | The owner's Mac is short on disk, so full Xcode is not installed. Everything builds, tests, and bundles with the Command Line Tools |
 | Repo | **Open source.** The public home is `tuhin-cmd/land-line`. Work stays local until the owner says to publish | Owner's decision (2026-11-10) |
-| License | **Not chosen yet**, and now needed before publishing | See "Open questions" |
+| License | **GPL-3.0-or-later** (owner, 2026-11-10) | KDE Connect is GPL, so its source can be read freely while verifying the protocol. Its files are "GPL-2.0-only OR GPL-3.0-only", so any file closely adapted from them must be marked `GPL-3.0-only`. So far everything is written from observed behaviour, not adapted |
 
 ## Out of scope (for now)
 
@@ -250,7 +250,7 @@ Each milestone ends with something demonstrable on the real phone. Do not start 
 
 ## Open questions for the owner
 
-1. **License (needed before the repo goes public).** KDE Connect's apps are GPL. Code written independently against the protocol can carry any license; code copied or closely adapted from those apps cannot. Decide the license before reading their source closely, and get proper advice if this may become a commercial product.
+1. ~~License.~~ Decided: GPL-3.0-or-later.
 2. **OTP auto-copy** on by default, or opt-in behind the notification action?
 3. **Intel Macs:** build universal, or Apple silicon only?
 4. Is a fork of the Android app acceptable later if clipboard or OTP behaviour demands it?

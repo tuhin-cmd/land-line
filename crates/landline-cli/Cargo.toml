@@ -4,6 +4,7 @@ description = "Headless driver for landline-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [[bin]]

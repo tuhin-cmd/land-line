@@ -11,6 +11,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod device_id;
+pub mod discovery;
+pub mod identity;
+pub mod packet;
+pub mod pairing;
+pub mod store;
+pub mod tls;
+
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
