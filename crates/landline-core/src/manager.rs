@@ -32,10 +32,11 @@ const CAPABILITIES: &[&str] = &[TYPE_PING];
 /// we do the same, which also absorbs a broadcast that reaches us twice.
 const IDENTITY_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How often to announce again while a paired device is unreachable. The
-/// protocol has no reconnect of its own: a link comes back only when one
-/// side announces and the other connects.
-const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
+/// How often to announce again while a paired device is unreachable or no
+/// device is connected at all. The protocol has no reconnect of its own: a
+/// link comes back only when one side announces and the other connects, and
+/// a phone with its screen off can miss a single broadcast.
+const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
 
 pub(crate) enum Msg {
     Start,
@@ -327,11 +328,12 @@ impl Manager {
     }
 
     async fn tick(&mut self) {
+        let connected = self.devices.values().any(|entry| entry.link.is_some());
         let waiting = self
             .devices
             .values()
             .any(|entry| entry.pairing.is_paired() && entry.link.is_none());
-        if waiting {
+        if waiting || !connected {
             self.broadcast().await;
         }
     }
