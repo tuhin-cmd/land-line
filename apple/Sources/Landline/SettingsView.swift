@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var exportError: String?
 
     var body: some View {
         Form {
@@ -11,6 +12,7 @@ struct SettingsView: View {
             mutedApps
             clipboard
             files
+            troubleshooting
         }
         .formStyle(.grouped)
         .frame(width: 480)
@@ -127,7 +129,7 @@ struct SettingsView: View {
         Section {
             LabeledContent("Save received files to") {
                 HStack(spacing: 8) {
-                    FolderLabel(path: model.settings.downloadDir ?? AppModel.defaultDownloadDir)
+                    FolderLabel(path: model.settings.downloadDir ?? model.defaultDownloadDir)
                     Button("Choose…", action: chooseFolder)
                 }
             }
@@ -137,8 +139,46 @@ struct SettingsView: View {
                     Button("Use Downloads") { model.setDownloadDir(nil) }
                 }
             }
+            Toggle(isOn: Binding(
+                get: { model.settings.openLinksAutomatically },
+                set: { model.settings.openLinksAutomatically = $0 })
+            ) {
+                Text("Open links from the phone automatically")
+                Text("Web and email links open as soon as they arrive. When off, the notification has an Open button. Shared text always goes to the clipboard.")
+            }
         } header: {
-            Text("Files")
+            Text("Files and links")
+        }
+    }
+
+    private var troubleshooting: some View {
+        Section {
+            LabeledContent {
+                HStack {
+                    Button("Show in Finder") { model.showLogsInFinder() }
+                    Button("Export Logs…", action: exportLogs)
+                }
+            } label: {
+                Text("Logs")
+                Text("Connection and pairing events, never message contents.")
+            }
+            if let error = exportError {
+                Explanation(text: error, symbol: "exclamationmark.triangle.fill", tint: .orange)
+            }
+        } header: {
+            Text("Troubleshooting")
+        }
+    }
+
+    private func exportLogs() {
+        guard let url = FilePanels.chooseLogDestination(suggestedName: LogReport.suggestedFileName(date: .now))
+        else { return }
+        do {
+            try model.logReport().write(to: url, atomically: true, encoding: .utf8)
+            exportError = nil
+            model.workspace.reveal([url])
+        } catch {
+            exportError = "The logs couldn’t be saved: \(error.localizedDescription)"
         }
     }
 
@@ -150,7 +190,7 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
         panel.message = "Choose where files sent from your phone are saved."
-        panel.directoryURL = URL(fileURLWithPath: model.settings.downloadDir ?? AppModel.defaultDownloadDir)
+        panel.directoryURL = URL(fileURLWithPath: model.settings.downloadDir ?? model.defaultDownloadDir)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.setDownloadDir(url.path)
     }
