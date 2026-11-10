@@ -4,12 +4,18 @@ import SwiftUI
 @main
 struct LandlineApp: App {
     @State private var model: AppModel
+    @State private var statusItemDrop: StatusItemDropTarget
 
     init() {
         let mode = LaunchMode(arguments: CommandLine.arguments)
         if mode != .live, let appearance = DemoAppearance(arguments: CommandLine.arguments) {
             NSApplication.shared.appearance = appearance.nsAppearance
         }
+        if mode == .live {
+            LogFiles.start()
+        }
+        // Previews from a run that ended without closing its windows.
+        PreviewCache.clean()
         let model = AppModel(mode: mode)
         // Started here rather than when the panel first opens: the phone
         // should be able to find the Mac as soon as the app is running.
@@ -21,6 +27,9 @@ struct LandlineApp: App {
             MainActor.assumeIsolated { model.stop() }
         }
         _model = State(initialValue: model)
+        let drop = StatusItemDropTarget(model: model)
+        drop.install()
+        _statusItemDrop = State(initialValue: drop)
     }
 
     var body: some Scene {
@@ -32,6 +41,14 @@ struct LandlineApp: App {
                 .accessibilityLabel("Landline")
         }
         .menuBarExtraStyle(.window)
+
+        WindowGroup("Phone Files", id: StorageBrowserWindow.id, for: String.self) { $deviceId in
+            if let deviceId {
+                StorageBrowserWindow(deviceId: deviceId)
+                    .environment(model)
+            }
+        }
+        .defaultSize(width: 860, height: 520)
 
         Settings {
             SettingsView()
