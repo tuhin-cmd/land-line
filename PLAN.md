@@ -130,7 +130,7 @@ The core runs its own tokio runtime. Delegate callbacks arrive on core threads; 
 
 ## Protocol notes
 
-Checked against the `KDE/kdeconnect-android` source (commit `207dcdb`, 2026-11-08) and, where noted, `KDE/kdeconnect-kde`. Packet types for M2 onward (the table below) are still from memory.
+Checked against the `KDE/kdeconnect-android` source (commit `207dcdb`, 2026-11-08) and, where noted, `KDE/kdeconnect-kde`.
 
 **Packets.** One JSON object per line, newline terminated: `{"id": <ms since epoch>, "type": "kdeconnect.<name>", "body": {…}}`. Optional `payloadSize` (-1 means unknown) and `payloadTransferInfo` (`{"port": N}`); both are omitted, never `null`, when there is no payload, and a packet with `payloadSize` but no `payloadTransferInfo` is rejected. Peers read body values leniently (numbers as strings and the reverse), so we do too.
 
