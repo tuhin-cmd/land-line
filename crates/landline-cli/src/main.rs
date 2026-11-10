@@ -94,6 +94,9 @@ enum Command {
         device: String,
         remote: String,
         local: PathBuf,
+        /// Stop the download after this many seconds, to try cancelling.
+        #[arg(long, value_name = "SECONDS")]
+        cancel_after: Option<f64>,
     },
     /// Copy a file to the device.
     Put {
@@ -245,7 +248,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
             device,
             remote,
             local,
-        } => session.get(&device, &remote, local),
+            cancel_after,
+        } => session.get(&device, &remote, local, cancel_after),
         Command::Put {
             device,
             local,
@@ -477,9 +481,53 @@ impl Session {
         Ok(())
     }
 
-    fn get(&self, wanted: &str, remote: &str, local: PathBuf) -> Result<(), Failure> {
+    fn get(
+        &self,
+        wanted: &str,
+        remote: &str,
+        local: PathBuf,
+        cancel_after: Option<f64>,
+    ) -> Result<(), Failure> {
         let device = self.find(wanted, usable)?;
-        block_on(self.core.download(&device.id, remote, &local))??;
+        let started = Instant::now();
+        // Borrowed on its own: the session as a whole cannot be shared with
+        // another thread, because its event queue cannot.
+        let core = &self.core;
+        let result = std::thread::scope(|scope| {
+            let download = scope.spawn(|| {
+                // The boxed error cannot cross threads; its text can.
+                block_on(core.download(&device.id, remote, &local))
+                    .map_err(|error| error.to_string())
+            });
+            // Meanwhile, watch the transfer's progress so it can be stopped.
+            let mut last = None;
+            while !download.is_finished() {
+                let Ok(event) = self.events.recv_timeout(Duration::from_millis(100)) else {
+                    continue;
+                };
+                let Event::Transfer(transfer) = event else {
+                    continue;
+                };
+                let due =
+                    cancel_after.is_some_and(|after| started.elapsed().as_secs_f64() >= after);
+                if due && transfer.state == TransferState::InProgress {
+                    let _ = self.core.cancel_transfer(&device.id, transfer.id);
+                }
+                last = Some(transfer);
+            }
+            if let Some(transfer) = last {
+                eprintln!(
+                    "landline: {} of {} bytes in {:.1} s",
+                    transfer.bytes_done,
+                    transfer
+                        .bytes_total
+                        .map_or("?".to_owned(), |total| total.to_string()),
+                    started.elapsed().as_secs_f64()
+                );
+            }
+            download.join().expect("the download thread does not panic")
+        });
+        result??;
         println!("Saved {}.", local.display());
         Ok(())
     }
