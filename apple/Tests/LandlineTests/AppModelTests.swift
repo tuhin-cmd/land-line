@@ -9,6 +9,8 @@ final class FakeBackend: DeviceBackend {
     let events: AsyncStream<CoreEvent>
     let continuation: AsyncStream<CoreEvent>.Continuation
     var sent: [(DeviceCommand, String)] = []
+    var clipboardSent: [String] = []
+    var downloadDirs: [String] = []
     var initial: [Device] = []
     var failure: (any Error)?
 
@@ -24,14 +26,18 @@ final class FakeBackend: DeviceBackend {
         if let failure { throw failure }
         sent.append((command, deviceId))
     }
+
+    func sendClipboard(_ text: String) { clipboardSent.append(text) }
+    func setDownloadDir(_ path: String) { downloadDirs.append(path) }
 }
 
 @MainActor @Suite struct AppModelTests {
     let backend = FakeBackend()
+    let services = TestServices()
 
     func startedModel() -> AppModel {
         let backend = backend
-        let model = AppModel { backend }
+        let model = AppModel(services: services.services) { backend }
         model.start()
         return model
     }
@@ -43,7 +49,7 @@ final class FakeBackend: DeviceBackend {
     }
 
     @Test func startFailureIsShownNotThrown() {
-        let model = AppModel { throw LandlineError.Startup(message: "disk full") }
+        let model = AppModel(services: services.services) { throw LandlineError.Startup(message: "disk full") }
         model.start()
         #expect(model.startError == "disk full")
         #expect(model.menuBarSymbol == "iphone.gen3.slash")

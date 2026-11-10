@@ -9,6 +9,10 @@ protocol DeviceBackend: AnyObject {
     func stop()
     func devices() -> [Device]
     func send(_ command: DeviceCommand, to deviceId: String) throws
+    /// Offers the text to every paired, connected device.
+    func sendClipboard(_ text: String)
+    /// Where files from a device are saved from now on.
+    func setDownloadDir(_ path: String)
 }
 
 enum CoreEvent: Sendable {
@@ -16,10 +20,19 @@ enum CoreEvent: Sendable {
     case pairingFailed(deviceId: String, reason: PairFailure)
     case pingReceived(deviceId: String)
     case networkStatusChanged(NetworkStatus)
+    case notificationPosted(deviceId: String, notification: PhoneNotification)
+    case notificationRemoved(deviceId: String, notificationId: String)
+    case smsReceived(deviceId: String, message: SmsMessage)
+    case otpDetected(deviceId: String, otp: OtpCode)
+    case clipboardReceived(deviceId: String, text: String)
+    case transferUpdated(Transfer)
+    case textShared(deviceId: String, text: String)
+    case urlShared(deviceId: String, url: String)
 }
 
-enum DeviceCommand: Sendable {
+enum DeviceCommand: Equatable, Sendable {
     case requestPair, acceptPair, rejectPair, unpair, sendPing
+    case dismissNotification(id: String)
 }
 
 /// How the app was launched. `--demo` skips the core so the UI can be looked
@@ -57,4 +70,11 @@ enum DemoScenario: String, CaseIterable, Sendable {
     case error
     /// A paired phone that pings the Mac every few seconds.
     case ping
+    /// A paired phone that posts, updates and removes notifications, sends a
+    /// one-time code and its clipboard. Banners and the pasteboard are
+    /// simulated inside the app.
+    case notifications
+    /// The same script, but shown with real banners and written to the real
+    /// pasteboard, to check the system side by hand.
+    case system
 }

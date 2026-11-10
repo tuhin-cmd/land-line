@@ -64,16 +64,21 @@ final class CoreBackend: DeviceBackend {
         case .rejectPair: try core.rejectPair(deviceId: deviceId)
         case .unpair: try core.unpair(deviceId: deviceId)
         case .sendPing: try core.sendPing(deviceId: deviceId)
+        case .dismissNotification(let id): try core.dismissNotification(deviceId: deviceId, notificationId: id)
         }
     }
 
+    func sendClipboard(_ text: String) { core.sendClipboard(text: text) }
+
+    func setDownloadDir(_ path: String) { core.setDownloadDir(path: path) }
+
     /// The core's identity lives here, shared with `landline-cli` so both
     /// appear to the phone as the same device.
-    static func defaultConfig() throws -> CoreConfig {
+    static func defaultConfig(downloadDir: String?) throws -> CoreConfig {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let dataDir = support.appendingPathComponent("io.github.tuhin-cmd.landline", isDirectory: true)
-        return CoreConfig(dataDir: dataDir.path, deviceName: computerName(), downloadDir: nil)
+        return CoreConfig(dataDir: dataDir.path, deviceName: computerName(), downloadDir: downloadDir)
     }
 
     /// The name set in System Settings > General > Sharing, which is what the
@@ -110,13 +115,35 @@ private final class DelegateAdapter: CoreDelegate {
         continuation.yield(.networkStatusChanged(status))
     }
 
-    // Not shown in the app yet.
-    func notificationPosted(deviceId: String, notification: PhoneNotification) {}
-    func notificationRemoved(deviceId: String, notificationId: String) {}
-    func smsReceived(deviceId: String, message: SmsMessage) {}
-    func otpDetected(deviceId: String, otp: OtpCode) {}
-    func clipboardReceived(deviceId: String, text: String) {}
-    func transferUpdated(transfer: Transfer) {}
-    func textShared(deviceId: String, text: String) {}
-    func urlShared(deviceId: String, url: String) {}
+    func notificationPosted(deviceId: String, notification: PhoneNotification) {
+        continuation.yield(.notificationPosted(deviceId: deviceId, notification: notification))
+    }
+
+    func notificationRemoved(deviceId: String, notificationId: String) {
+        continuation.yield(.notificationRemoved(deviceId: deviceId, notificationId: notificationId))
+    }
+
+    func smsReceived(deviceId: String, message: SmsMessage) {
+        continuation.yield(.smsReceived(deviceId: deviceId, message: message))
+    }
+
+    func otpDetected(deviceId: String, otp: OtpCode) {
+        continuation.yield(.otpDetected(deviceId: deviceId, otp: otp))
+    }
+
+    func clipboardReceived(deviceId: String, text: String) {
+        continuation.yield(.clipboardReceived(deviceId: deviceId, text: text))
+    }
+
+    func transferUpdated(transfer: Transfer) {
+        continuation.yield(.transferUpdated(transfer))
+    }
+
+    func textShared(deviceId: String, text: String) {
+        continuation.yield(.textShared(deviceId: deviceId, text: text))
+    }
+
+    func urlShared(deviceId: String, url: String) {
+        continuation.yield(.urlShared(deviceId: deviceId, url: url))
+    }
 }
