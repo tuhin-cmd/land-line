@@ -1,0 +1,36 @@
+# XcodeGen spec. Landline.xcodeproj is generated and not committed:
+#   cd apple && xcodegen generate
+name: Landline
+options:
+  bundleIdPrefix: io.github.tuhin-cmd
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  LandlineKit:
+    path: LandlineKit
+
+targets:
+  Landline:
+    type: application
+    platform: macOS
+    sources:
+      - Landline
+    dependencies:
+      - package: LandlineKit
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.tuhin-cmd.landline
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        # Menu bar only: no Dock icon, no main window.
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        # Not sandboxed (see PLAN.md). Ad-hoc signed until M6 adds Developer ID.
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
