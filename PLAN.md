@@ -36,11 +36,17 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 |---|---|
 | M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
 | M1: discovery, TLS, pairing | Built (2026-11-10) and working against the real phone: the OnePlus 15 running stock KDE Connect was discovered, paired from the Mac with a matching verification key, and reconnects as paired under the pinned certificate in both the CLI and the app. The menu bar panel lists devices and handles pairing in both directions (`--demo` shows every state without a network). **Still owed for the exit check:** a ping from the phone seen on the Mac, the owner confirming the Mac's ping showed on the phone, and the link coming back after toggling Wi-Fi on each device. Also untested on the real phone: pairing started from the phone, and unpairing. |
-| M2: notifications and OTP | Core and bridge built (2026-11-10): notifications with cached icons, battery, SMS, one-time code extraction (70-case table in English and Bangla). Unit-tested against packet shapes from the Android source; **not yet seen with real notifications or a real OTP SMS** (the phone had not granted KDE Connect notification access when last checked). |
-| M3: clipboard | Core and bridge built. Covered by the two-device loopback test. Not yet tried with the phone. |
-| M4: files | Core and bridge built: receive into the download folder with safe names, send with per-file ports, progress and cancel. A file crosses between two cores in the loopback test. Not yet tried with the phone. |
-| M5: storage | `crates/landline-sftp` (russh client, tested against an in-process server and macOS's own sshd) plus the storage plugin in the core. Not yet tried with the phone. |
-| M6: polish | In progress. |
+| M2: notifications and OTP | Built in the core and the app (2026-11-10). **Seen working with the phone:** a real notification mirrored into the app's panel with its icon (which also exercises a payload download), and the battery level. **Not yet seen:** a Mac banner and its actions, a real one-time code arriving by SMS, and dismissing from the Mac. |
+| M3: clipboard | Built in the core and the app. Covered by the two-device loopback test and Swift tests with a fake pasteboard. Not yet confirmed with the phone in either direction. |
+| M4: files | Built in the core and the app: receive into the chosen folder with safe names, send from a device's menu, by dropping on its row or on the menu bar icon, progress and cancel. A file crosses between two cores in the loopback test. Not yet tried with the phone. Drag and drop was built but not exercised on screen. |
+| M5: storage | Built: `crates/landline-sftp` (tested against an in-process server and macOS's own sshd), the storage plugin, and a browser window with Quick Look, download, upload and drag out. Not yet tried with the phone. No File Provider extension (needs Xcode's extension tooling). |
+| M6: polish | Built: Settings window, launch at login, notification permission handling, muted apps, download folder, log export, blocked-network warning. **Not done:** Developer ID signing and notarization (needs an Apple Developer account), and the week of real use. |
+
+**What only the owner can do next**
+
+1. Allow Landline under System Settings > Privacy & Security > Local Network when macOS asks (and again after each rebuild, unless `LANDLINE_SIGN_IDENTITY` is set up; see `README.md`). Until then the Mac cannot open connections to the phone.
+2. On the phone, grant KDE Connect's plugins their permissions: notifications, SMS and phone, and "All files access".
+3. Try each feature once and note what breaks: a real OTP SMS, copy on each side, a file each way (including a large one), browsing `DCIM/Camera`, toggling Wi-Fi on each device, pairing from the phone, unpairing.
 
 Notes from M0 that later milestones should know:
 
