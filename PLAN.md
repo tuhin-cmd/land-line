@@ -35,7 +35,7 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 | Milestone | State |
 |---|---|
 | M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
-| M1: discovery, TLS, pairing | Core and CLI built (2026-11-10): `landline discover`, `pair`, `unpair`, `ping`, `listen`. Two cores connect, pair, ping and reconnect over loopback in `crates/landline-core/tests/two_devices.rs`, and TLS interoperates with OpenSSL at TLS 1.2. **Not yet tried against the phone**, which is the exit check. The Swift device list and pairing UI are not built yet. |
+| M1: discovery, TLS, pairing | Built (2026-11-10) and working against the real phone: the OnePlus 15 running stock KDE Connect was discovered, paired from the Mac with a matching verification key, and reconnects as paired under the pinned certificate in both the CLI and the app. The menu bar panel lists devices and handles pairing in both directions (`--demo` shows every state without a network). **Still owed for the exit check:** a ping from the phone seen on the Mac, the owner confirming the Mac's ping showed on the phone, and the link coming back after toggling Wi-Fi on each device. Also untested on the real phone: pairing started from the phone, and unpairing. |
 | M2 onward | Not started |
 
 Notes from M0 that later milestones should know:
@@ -181,7 +181,7 @@ Each milestone ends with something demonstrable on the real phone. Do not start 
 
 **Exit:** The Mac pairs with the stock KDE Connect app, a ping works in both directions, and the link comes back by itself after toggling Wi-Fi on either device.
 
-**Do the OTP spike here** (see Risks, item 1), because `landline listen` is all it needs.
+**Do the OTP spike here** (see Risks, item 1), because `landline listen` is all it needs. It does need the Mac to advertise the notification and SMS packet types first: the phone sends nothing we do not list in our identity, and M1 lists only ping.
 
 ### M2: notifications and OTP
 
