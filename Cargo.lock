@@ -1247,6 +1247,8 @@ version = "0.1.0"
 dependencies = [
  "landline-core",
  "thiserror",
+ "tracing",
+ "tracing-subscriber",
  "uniffi",
 ]
 

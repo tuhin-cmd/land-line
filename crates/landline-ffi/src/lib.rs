@@ -13,6 +13,53 @@ pub fn core_version() -> String {
     landline_core::version().to_owned()
 }
 
+/// Writes the core's log to `path` from now on, so the app can show or
+/// export it. Call once, before creating the core; later calls do nothing.
+/// The log holds connection and pairing events, never message contents. A
+/// log over a few megabytes is moved aside to `<path>.old` first.
+#[uniffi::export]
+pub fn start_logging(path: String) -> Result<(), LandlineError> {
+    use tracing_subscriber::filter::Targets;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
+    let path = std::path::PathBuf::from(path);
+    let startup = |error: std::io::Error| LandlineError::Startup {
+        message: format!("could not open the log file: {error}"),
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(startup)?;
+    }
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_LOG_BYTES) {
+        let mut old = path.clone().into_os_string();
+        old.push(".old");
+        let _ = std::fs::rename(&path, old);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(startup)?;
+
+    // Fails only if a logger is already installed, which is the documented
+    // "later calls do nothing".
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file)),
+        )
+        .with(
+            Targets::new()
+                .with_target("landline_core", tracing::Level::DEBUG)
+                .with_target("landline_sftp", tracing::Level::DEBUG),
+        )
+        .try_init();
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum LandlineError {
     /// The core could not start: its data directory is unusable, or its
