@@ -616,4 +616,289 @@ mod tests {
             Err(CertificateError::BadEncoding.into())
         );
     }
+
+    /// Interoperability with OpenSSL, the nearest thing to the Android app's
+    /// Conscrypt (BoringSSL) available locally. The peer certificates are
+    /// shaped like the Android ones: self-signed, signed with SHA-512, no
+    /// extensions, EC P-256 or (older installs) RSA 2048. OpenSSL is limited
+    /// to TLS 1.2 like the Android app, and checks our certificate by using
+    /// it as its only trust anchor, as Android does once paired.
+    ///
+    /// Skipped when `openssl` is not on the path, or is LibreSSL (as
+    /// /usr/bin/openssl on macOS is), whose options differ.
+    mod openssl {
+        use super::*;
+        use crate::store::testing::TempDir;
+        use rustls::pki_types::pem::PemObject;
+        use std::fs;
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::path::{Path, PathBuf};
+        use std::process::{Child, ChildStdout, Command, Stdio};
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
+        use tokio::net::{TcpListener, TcpStream};
+
+        const TIMEOUT: Duration = Duration::from_secs(20);
+
+        fn available() -> bool {
+            match Command::new("openssl").arg("version").output() {
+                Ok(output) if output.stdout.starts_with(b"OpenSSL ") => true,
+                Ok(output) => {
+                    eprintln!(
+                        "skipping: openssl is {}",
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    );
+                    false
+                }
+                Err(error) => {
+                    eprintln!("skipping: cannot run openssl: {error}");
+                    false
+                }
+            }
+        }
+
+        fn run(command: &mut Command) {
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{command:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum KeyType {
+            Ec,
+            Rsa,
+        }
+
+        /// An OpenSSL-made peer identity: certificate and key files, and
+        /// the certificate's DER.
+        struct Peer {
+            certificate: PathBuf,
+            key: PathBuf,
+            der: Vec<u8>,
+        }
+
+        fn peer(dir: &Path, key_type: KeyType) -> Peer {
+            let config = dir.join("req.cnf");
+            // An empty extension section, with the key identifiers OpenSSL
+            // would otherwise add switched off, leaves no extensions at all.
+            fs::write(
+                &config,
+                "[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = ext\n\
+                 [dn]\nCN = 0123456789abcdef0123456789abcdef\nOU = KDE Connect\nO = KDE\n\
+                 [ext]\nsubjectKeyIdentifier = none\nauthorityKeyIdentifier = none\n",
+            )
+            .unwrap();
+            let name = format!("{key_type:?}").to_lowercase();
+            let certificate = dir.join(format!("{name}.pem"));
+            let key = dir.join(format!("{name}.key"));
+            let new_key = match key_type {
+                KeyType::Ec => "ec",
+                KeyType::Rsa => "rsa:2048",
+            };
+            let mut command = Command::new("openssl");
+            command.args(["req", "-x509", "-sha512", "-days", "3650", "-nodes"]);
+            command.arg("-config").arg(&config);
+            command.args(["-newkey", new_key]);
+            if let KeyType::Ec = key_type {
+                command.args(["-pkeyopt", "ec_paramgen_curve:P-256"]);
+            }
+            command
+                .arg("-keyout")
+                .arg(&key)
+                .arg("-out")
+                .arg(&certificate);
+            run(&mut command);
+
+            let der = CertificateDer::from_pem_slice(&fs::read(&certificate).unwrap())
+                .unwrap()
+                .to_vec();
+            let parsed = X509Certificate::from_der(&der).unwrap().1;
+            assert!(parsed.extensions().is_empty(), "{key_type:?} certificate");
+            Peer {
+                certificate,
+                key,
+                der,
+            }
+        }
+
+        /// Kills the process when the test ends, however it ends.
+        struct Process(Child);
+
+        impl Drop for Process {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        impl Process {
+            fn stderr(&mut self) -> String {
+                let _ = self.0.kill();
+                let mut text = String::new();
+                if let Some(mut stderr) = self.0.stderr.take() {
+                    let _ = stderr.read_to_string(&mut text);
+                }
+                text
+            }
+        }
+
+        /// Starts `openssl s_server` and returns it with the port it chose.
+        fn s_server(peer: &Peer, ours: &Path) -> (Process, u16) {
+            let mut command = Command::new("openssl");
+            command.args(["s_server", "-accept", "127.0.0.1:0", "-naccept", "1"]);
+            command.args(["-tls1_2", "-rev"]);
+            command.arg("-cert").arg(&peer.certificate);
+            command.arg("-key").arg(&peer.key);
+            // Require our certificate and fail the handshake unless it is
+            // the one trusted anchor.
+            command.args(["-Verify", "1", "-verify_return_error"]);
+            command.arg("-CAfile").arg(ours);
+            let mut process = Process(
+                command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let stdout: ChildStdout = process.0.stdout.take().unwrap();
+            let mut lines = BufReader::new(stdout).lines();
+            let port = loop {
+                let Some(Ok(line)) = lines.next() else {
+                    panic!("s_server did not start: {}", process.stderr());
+                };
+                if let Some(address) = line.strip_prefix("ACCEPT ") {
+                    break address.rsplit(':').next().unwrap().parse().unwrap();
+                }
+            };
+            // Keep draining s_server's chatter so it never blocks on a
+            // full pipe.
+            std::thread::spawn(move || lines.for_each(drop));
+            (process, port)
+        }
+
+        async fn our_client_against_s_server(key_type: KeyType, trust: fn(&Peer) -> PeerTrust) {
+            let temp = TempDir::new();
+            let (ours, _) = LocalIdentity::load_or_create(&temp.store()).unwrap();
+            let peer = peer(temp.path(), key_type);
+            let (mut server, port) =
+                s_server(&peer, &temp.store().join(crate::store::CERTIFICATE_FILE));
+
+            let config = client_config(&ours, &trust(&peer)).unwrap();
+            let exchange = async {
+                let tcp = TcpStream::connect(("127.0.0.1", port)).await?;
+                let mut tls = TlsConnector::from(config)
+                    .connect(server_name(), tcp)
+                    .await?;
+                tls.write_all(b"hello\n").await?;
+                tls.flush().await?;
+                let mut reply = String::new();
+                AsyncBufReader::new(&mut tls).read_line(&mut reply).await?;
+                io::Result::Ok((tls, reply))
+            };
+            let (tls, reply) = match tokio::time::timeout(TIMEOUT, exchange).await {
+                Ok(Ok(done)) => done,
+                Ok(Err(error)) => panic!("{key_type:?}: {error}\ns_server: {}", server.stderr()),
+                Err(_) => panic!("{key_type:?}: timed out\ns_server: {}", server.stderr()),
+            };
+            assert_eq!(reply, "olleh\n");
+            let state = tls.get_ref().1;
+            assert_eq!(state.protocol_version(), Some(ProtocolVersion::TLSv1_2));
+            assert_eq!(tls.peer_certificate(), Some(peer.der.clone()));
+        }
+
+        async fn s_client_against_our_server(key_type: KeyType, trust: fn(&Peer) -> PeerTrust) {
+            let temp = TempDir::new();
+            let (ours, _) = LocalIdentity::load_or_create(&temp.store()).unwrap();
+            let peer = peer(temp.path(), key_type);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+
+            let mut command = Command::new("openssl");
+            command.args(["s_client", "-tls1_2", "-quiet"]);
+            command.args(["-connect", &format!("127.0.0.1:{port}")]);
+            command.arg("-cert").arg(&peer.certificate);
+            command.arg("-key").arg(&peer.key);
+            command.args(["-verify_return_error", "-CAfile"]);
+            command.arg(temp.store().join(crate::store::CERTIFICATE_FILE));
+            let mut client = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            // Stays open until our side closes, so s_client does not hang
+            // up early on end of input.
+            let mut stdin = client.stdin.take().unwrap();
+            stdin.write_all(b"hello\n").unwrap();
+            stdin.flush().unwrap();
+            let client = tokio::task::spawn_blocking(move || client.wait_with_output());
+
+            let config = server_config(&ours, &trust(&peer)).unwrap();
+            let exchange = async {
+                let (tcp, _) = listener.accept().await?;
+                let mut tls = TlsAcceptor::from(config).accept(tcp).await?;
+                let mut line = String::new();
+                AsyncBufReader::new(&mut tls).read_line(&mut line).await?;
+                tls.write_all(b"world\n").await?;
+                tls.shutdown().await?;
+                io::Result::Ok((tls, line))
+            };
+            let result = tokio::time::timeout(TIMEOUT, exchange).await;
+            drop(stdin);
+            let output = tokio::time::timeout(TIMEOUT, client)
+                .await
+                .expect("s_client did not exit")
+                .unwrap()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let (tls, line) = match result {
+                Ok(Ok(done)) => done,
+                Ok(Err(error)) => panic!("{key_type:?}: {error}\ns_client: {stderr}"),
+                Err(_) => panic!("{key_type:?}: timed out\ns_client: {stderr}"),
+            };
+            assert_eq!(line, "hello\n");
+            assert!(
+                stdout.contains("world"),
+                "s_client got {stdout:?}: {stderr}"
+            );
+            let state = tls.get_ref().1;
+            assert_eq!(state.protocol_version(), Some(ProtocolVersion::TLSv1_2));
+            assert_eq!(tls.peer_certificate(), Some(peer.der.clone()));
+        }
+
+        fn pinned(peer: &Peer) -> PeerTrust {
+            PeerTrust::Pinned(peer.der.clone())
+        }
+
+        fn unverified(_: &Peer) -> PeerTrust {
+            PeerTrust::Unverified
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn our_client_connects_to_openssl() {
+            if !available() {
+                return;
+            }
+            for key_type in [KeyType::Ec, KeyType::Rsa] {
+                our_client_against_s_server(key_type, pinned).await;
+                our_client_against_s_server(key_type, unverified).await;
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn openssl_connects_to_our_server() {
+            if !available() {
+                return;
+            }
+            for key_type in [KeyType::Ec, KeyType::Rsa] {
+                s_client_against_our_server(key_type, pinned).await;
+                s_client_against_our_server(key_type, unverified).await;
+            }
+        }
+    }
 }

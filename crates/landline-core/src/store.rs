@@ -487,26 +487,31 @@ fn write_atomically(path: &Path, contents: &[u8], mode: u32) -> Result<(), Store
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod testing {
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     /// A directory under the system temp dir, removed on drop.
-    struct TempDir(PathBuf);
+    pub(crate) struct TempDir(PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
                 "landline-test-{}-{}",
                 std::process::id(),
-                device_id::generate()
+                crate::device_id::generate()
             ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
 
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+
         /// A path inside the temp dir that does not exist yet, so tests also
         /// cover creating the store directory.
-        fn store(&self) -> PathBuf {
+        pub(crate) fn store(&self) -> PathBuf {
             self.0.join("store")
         }
     }
@@ -516,6 +521,12 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::TempDir;
+    use super::*;
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
