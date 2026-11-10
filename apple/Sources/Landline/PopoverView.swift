@@ -127,6 +127,7 @@ struct PopoverView: View {
                 .foregroundStyle(.secondary)
                 .help(model.isDemo ? "Demo mode: sample devices, no network" : "")
             Spacer()
+            SettingsButton()
             Button("Quit Landline") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
                 .controlSize(.small)
@@ -137,6 +138,38 @@ struct PopoverView: View {
         let app = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
         let demo = model.isDemo ? " · Demo" : ""
         return "Version \(app) · core \(coreVersion())\(demo)"
+    }
+}
+
+/// Opens the Settings window and brings it forward. A menu bar app is never
+/// the active app on its own, so without this the window would open behind
+/// whatever the user was working in.
+private struct SettingsButton: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Button {
+            NSApplication.shared.activate()
+            openSettings()
+            // `activate()` is only a request since macOS 14, and the system
+            // may turn it down; ordering the window front regardless covers
+            // that. The window exists only after this turn of the run loop.
+            DispatchQueue.main.async {
+                for window in NSApplication.shared.windows
+                where window.identifier?.rawValue == "com_apple_SwiftUI_Settings_window" {
+                    window.orderFrontRegardless()
+                    window.makeKey()
+                }
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .keyboardShortcut(",")
+        .help("Settings")
+        .accessibilityLabel("Settings")
     }
 }
 
@@ -263,4 +296,10 @@ enum SystemSettings {
         NSWorkspace.shared.open(url)
     }
 
+    /// Landline's page under Notifications.
+    static func openNotifications() {
+        let id = Bundle.main.bundleIdentifier ?? "io.github.tuhin-cmd.landline"
+        let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)")!
+        NSWorkspace.shared.open(url)
+    }
 }

@@ -28,5 +28,11 @@ struct LandlineApp: App {
                 .accessibilityLabel("Landline")
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environment(model)
+        }
     }
 }
+
