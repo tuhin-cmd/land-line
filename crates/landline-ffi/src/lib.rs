@@ -102,64 +102,136 @@ pub trait CoreDelegate: Send + Sync {
     fn network_status_changed(&self, status: NetworkStatus);
 }
 
+struct DelegateAdapter(Box<dyn CoreDelegate>);
+
+impl landline_core::CoreDelegate for DelegateAdapter {
+    fn devices_changed(&self, devices: Vec<landline_core::Device>) {
+        self.0
+            .devices_changed(devices.into_iter().map(Device::from).collect());
+    }
+
+    fn pairing_failed(&self, device_id: &str, reason: landline_core::PairingFailure) {
+        use landline_core::PairingFailure as Core;
+        let reason = match reason {
+            Core::TimedOut => PairFailure::TimedOut,
+            Core::CancelledByPeer => PairFailure::CancelledByPeer,
+            Core::ClocksDoNotMatch => PairFailure::ClocksDoNotMatch,
+            Core::NotReachable => PairFailure::NotReachable,
+            // The core does not report the user's own cancellation.
+            Core::CancelledByUser => return,
+        };
+        self.0.pairing_failed(device_id.to_owned(), reason);
+    }
+
+    fn ping_received(&self, device_id: &str) {
+        self.0.ping_received(device_id.to_owned());
+    }
+
+    fn network_status_changed(&self, status: landline_core::NetworkStatus) {
+        use landline_core::NetworkStatus as Core;
+        self.0.network_status_changed(match status {
+            Core::Ready => NetworkStatus::Ready,
+            Core::Offline => NetworkStatus::Offline,
+            Core::Blocked => NetworkStatus::Blocked,
+        });
+    }
+}
+
+impl From<landline_core::Device> for Device {
+    fn from(device: landline_core::Device) -> Self {
+        use landline_core::{DeviceType, PairState as Core};
+        Self {
+            id: device.id,
+            name: device.name,
+            kind: match device.device_type {
+                DeviceType::Phone => DeviceKind::Phone,
+                DeviceType::Tablet => DeviceKind::Tablet,
+                DeviceType::Desktop => DeviceKind::Desktop,
+                DeviceType::Laptop => DeviceKind::Laptop,
+                DeviceType::Tv => DeviceKind::Tv,
+            },
+            reachable: device.reachable,
+            pair_state: match device.pair_state {
+                Core::NotPaired => PairState::NotPaired,
+                Core::Requested => PairState::Requested,
+                Core::RequestedByPeer => PairState::RequestedByPeer,
+                Core::Paired => PairState::Paired,
+            },
+            verification_key: device.verification_key,
+        }
+    }
+}
+
+impl From<landline_core::CoreError> for LandlineError {
+    fn from(error: landline_core::CoreError) -> Self {
+        match error {
+            landline_core::CoreError::UnknownDevice => Self::UnknownDevice,
+            other => Self::Startup {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 #[derive(uniffi::Object)]
 pub struct LandlineCore {
-    // Wired to the core's link manager when it lands; until then every method
-    // is inert and the device list stays empty.
-    #[allow(dead_code)]
-    config: CoreConfig,
-    #[allow(dead_code)]
-    delegate: Box<dyn CoreDelegate>,
+    inner: landline_core::Core,
 }
 
 #[uniffi::export]
 impl LandlineCore {
+    /// Loads or creates this device's identity. Nothing touches the network
+    /// until `start`.
     #[uniffi::constructor]
     pub fn new(
         config: CoreConfig,
         delegate: Box<dyn CoreDelegate>,
     ) -> Result<Arc<Self>, LandlineError> {
-        Ok(Arc::new(Self { config, delegate }))
+        let config = landline_core::Config::new(config.data_dir, config.device_name);
+        let inner = landline_core::Core::new(config, Arc::new(DelegateAdapter(delegate)))?;
+        Ok(Arc::new(Self { inner }))
     }
 
     /// Starts discovery and accepts connections. Does nothing if started.
-    pub fn start(&self) {}
+    pub fn start(&self) {
+        self.inner.start();
+    }
 
     /// Drops every connection and stops discovery. Does nothing if stopped.
-    pub fn stop(&self) {}
+    pub fn stop(&self) {
+        self.inner.stop();
+    }
 
     /// Call when the network may have changed (Wi-Fi toggled, wake from
     /// sleep, new address) so the core announces itself again.
-    pub fn network_changed(&self) {}
+    pub fn network_changed(&self) {
+        self.inner.network_changed();
+    }
 
     pub fn devices(&self) -> Vec<Device> {
-        Vec::new()
+        self.inner.devices().into_iter().map(Device::from).collect()
     }
 
     /// Asks the device to pair, or accepts if it has already asked us.
     pub fn request_pair(&self, device_id: String) -> Result<(), LandlineError> {
-        let _ = device_id;
-        Err(LandlineError::UnknownDevice)
+        Ok(self.inner.request_pair(&device_id)?)
     }
 
     pub fn accept_pair(&self, device_id: String) -> Result<(), LandlineError> {
-        let _ = device_id;
-        Err(LandlineError::UnknownDevice)
+        Ok(self.inner.accept_pair(&device_id)?)
     }
 
     /// Rejects a request from the device, or cancels our own.
     pub fn reject_pair(&self, device_id: String) -> Result<(), LandlineError> {
-        let _ = device_id;
-        Err(LandlineError::UnknownDevice)
+        Ok(self.inner.reject_pair(&device_id)?)
     }
 
     pub fn unpair(&self, device_id: String) -> Result<(), LandlineError> {
-        let _ = device_id;
-        Err(LandlineError::UnknownDevice)
+        Ok(self.inner.unpair(&device_id)?)
     }
 
+    /// Pings a paired, reachable device. Does nothing otherwise.
     pub fn send_ping(&self, device_id: String) -> Result<(), LandlineError> {
-        let _ = device_id;
-        Err(LandlineError::UnknownDevice)
+        Ok(self.inner.send_ping(&device_id)?)
     }
 }
