@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use landline_sftp::{Endpoint, HostKey};
+use russh::keys::ssh_key::private::{KeypairData, RsaKeypair};
 use russh::keys::{Algorithm, EcdsaCurve, PrivateKey, PublicKey};
 use russh::server::{Auth, Msg, RunningServerHandle, Server as _, Session};
 use russh::{Channel, ChannelId, Preferred};
@@ -61,7 +62,15 @@ impl TestServer {
 
     pub async fn start_with(options: Options) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let host_key = PrivateKey::random(&mut rand::rng(), options.host_key).unwrap();
+        let host_key = match options.host_key {
+            // Old KDE Connect installs made 2048-bit keys, and the default
+            // 4096 takes many seconds to generate in a debug build.
+            Algorithm::Rsa { .. } => {
+                let pair = RsaKeypair::random(&mut rand::rng(), 2048).unwrap();
+                PrivateKey::new(KeypairData::from(pair), "").unwrap()
+            }
+            algorithm => PrivateKey::random(&mut rand::rng(), algorithm).unwrap(),
+        };
         let config = russh::server::Config {
             keys: vec![host_key.clone()],
             preferred: options.preferred,

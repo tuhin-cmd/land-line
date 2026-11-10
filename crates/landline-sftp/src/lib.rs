@@ -39,7 +39,25 @@ pub fn join(dir: &str, name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::join;
+    use super::*;
+
+    // The app drives sessions from spawned tasks across an FFI boundary.
+    #[allow(dead_code)]
+    fn sessions_and_their_futures_are_send(session: &Session, endpoint: &Endpoint) {
+        fn send<T: Send>(_: T) {}
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<Session>();
+        send_sync::<Endpoint>();
+        send_sync::<SftpError>();
+        let path = std::path::Path::new("x");
+        send(Session::connect(endpoint));
+        send(session.list_dir("/"));
+        send(session.download("/x", path, |_, _| {}));
+        send(session.upload(path, "/x", |_, _| {}));
+        send(session.remove("/x"));
+        send(session.rename("/x", "/y"));
+        send(session.create_dir("/x"));
+    }
 
     #[test]
     fn join_puts_one_slash_between() {
