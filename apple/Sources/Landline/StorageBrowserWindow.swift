@@ -245,7 +245,7 @@ private struct StorageBrowserView: View {
                     total: entry.size
                 ) {
                     Button("Close") { browser.cancelPreview() }
-                        .help("Stop waiting for the preview. The file is deleted when it arrives.")
+                        .help("Stop fetching the file for the preview.")
                 }
             }
             operations
@@ -267,9 +267,9 @@ private struct StorageBrowserView: View {
                 transfer: running.transferId.flatMap { model.transfer($0) }?.transfer,
                 total: nil)
             {
-                // The core cannot stop a storage download or upload, so
-                // there is no Stop button here.
-                EmptyView()
+                if running.transferId != nil {
+                    Button("Stop") { browser.stopRunningOperation() }
+                }
             }
         }
         let failed = browser.failedOperations

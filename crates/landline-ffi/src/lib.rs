@@ -76,6 +76,9 @@ pub enum LandlineError {
     /// Browsing or transferring the device's files failed.
     #[error("{message}")]
     Storage { message: String },
+    /// The transfer was stopped with `cancel_transfer`.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -428,6 +431,7 @@ impl From<landline_core::CoreError> for LandlineError {
             landline_core::CoreError::UnknownDevice => Self::UnknownDevice,
             landline_core::CoreError::NotReachable => Self::NotReachable,
             landline_core::CoreError::Storage(message) => Self::Storage { message },
+            landline_core::CoreError::Cancelled => Self::Cancelled,
             other => Self::Startup {
                 message: other.to_string(),
             },
@@ -524,8 +528,8 @@ impl LandlineCore {
         Ok(self.inner.send_files(&device_id, paths)?)
     }
 
-    /// Stops a transfer with that device. An incoming file's partial copy
-    /// is deleted.
+    /// Stops a transfer with that device, whether a shared file or a storage
+    /// download or upload. An incoming file's partial copy is deleted.
     pub fn cancel_transfer(
         &self,
         device_id: String,

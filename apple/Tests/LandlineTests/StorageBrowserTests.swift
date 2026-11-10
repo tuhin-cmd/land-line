@@ -17,6 +17,11 @@ final class FakeStorage: StorageService {
     /// Downloads wait for this before finishing, when set.
     var gate: AsyncStream<Void>?
     var downloadFailure: (any Error)?
+    private(set) var cancelled: [UInt64] = []
+
+    func cancelStorageTransfer(_ transferId: UInt64, on deviceId: String) {
+        cancelled.append(transferId)
+    }
 
     func storageRoots(of deviceId: String) async throws -> [StorageRoot] {
         if let rootsFailure { throw rootsFailure }
@@ -274,6 +279,24 @@ final class FakeStorage: StorageService {
         #expect(browser.operations.isEmpty)
     }
 
+    @Test func stoppingADownloadCancelsItWithoutReportingAFailure() async throws {
+        let (gate, open) = AsyncStream.makeStream(of: Void.self)
+        storage.gate = gate
+        let browser = try await started()
+        browser.download([entry(root + "/notes.txt")])
+        try await eventually { browser.operations.first?.transferId != nil }
+
+        browser.stopRunningOperation()
+        #expect(storage.cancelled == [1])
+        // The core answers a stopped transfer's call with this error.
+        storage.downloadFailure = LandlineError.Cancelled
+        open.yield()
+        open.finish()
+        try await eventually { browser.operations.isEmpty }
+        #expect(browser.failedOperations.isEmpty)
+        #expect(box.revealed.isEmpty)
+    }
+
     @Test func uploadsUnderFreeNamesThenReloads() async throws {
         let browser = try await started()
         let local = folder.file("up/notes.txt")
@@ -334,6 +357,7 @@ final class FakeStorage: StorageService {
         guard case .preparing(_, let transferId) = browser.previewState else { Issue.record("not preparing"); return }
         #expect(transferId == 1)
         browser.cancelPreview()
+        #expect(storage.cancelled == [1])
         open.yield()
         open.finish()
         try await Task.sleep(for: .milliseconds(50))

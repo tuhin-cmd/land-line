@@ -254,6 +254,7 @@ final class DemoBackend: DeviceBackend {
             return .finished(path: local)
         }
         if case .failed(let reason) = state { throw LandlineError.Storage(message: reason) }
+        if state == .cancelled { throw LandlineError.Cancelled }
     }
 
     func upload(_ local: String, to remote: String, on deviceId: String) async throws {
@@ -261,7 +262,10 @@ final class DemoBackend: DeviceBackend {
         let size = (try? FileManager.default.attributesOfItem(atPath: local)[.size] as? UInt64) ?? 0
         let name = (local as NSString).lastPathComponent
         let seconds = min(6, max(0.8, Double(size) / 25_000_000))
-        _ = await play(newTransfer(name, deviceId, .outgoing, total: size), seconds: seconds) { .finished(path: local) }
+        let state = await play(newTransfer(name, deviceId, .outgoing, total: size), seconds: seconds) {
+            .finished(path: local)
+        }
+        if state == .cancelled { throw LandlineError.Cancelled }
         let entry = RemoteEntry(
             name: RemotePath.name(of: remote), path: remote, isDir: false, size: size,
             modifiedSecs: Int64(Date.now.timeIntervalSince1970))

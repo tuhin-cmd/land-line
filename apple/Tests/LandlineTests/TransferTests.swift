@@ -33,13 +33,13 @@ import Testing
         #expect(list.listed.map(\.id) == [2, 4, 1])
     }
 
-    @Test func onlyRunningSharedTransfersCanBeCancelled() {
+    @Test func onlyRunningTransfersCanBeCancelled() {
         var list = TransferList()
         list.apply(transfer(1), origin: .shared, now: start)
         list.apply(transfer(2), origin: .storage, now: start)
         list.apply(transfer(3, .finished(path: "/a")), origin: .shared, now: start)
         #expect(list.entry(1)?.canCancel == true)
-        #expect(list.entry(2)?.canCancel == false)
+        #expect(list.entry(2)?.canCancel == true)
         #expect(list.entry(3)?.canCancel == false)
     }
 

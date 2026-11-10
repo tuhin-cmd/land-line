@@ -41,6 +41,9 @@ pub struct Options {
     pub host_key: Algorithm,
     /// A client key the server accepts besides the password.
     pub client_key: Option<PublicKey>,
+    /// Use this host key instead of generating one. The phone's server
+    /// presents its KDE Connect identity key.
+    pub host_private_key: Option<PrivateKey>,
 }
 
 impl Default for Options {
@@ -51,6 +54,7 @@ impl Default for Options {
                 curve: EcdsaCurve::NistP256,
             },
             client_key: None,
+            host_private_key: None,
         }
     }
 }
@@ -62,14 +66,15 @@ impl TestServer {
 
     pub async fn start_with(options: Options) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let host_key = match options.host_key {
+        let host_key = match (options.host_private_key, options.host_key) {
+            (Some(key), _) => key,
             // Old KDE Connect installs made 2048-bit keys, and the default
             // 4096 takes many seconds to generate in a debug build.
-            Algorithm::Rsa { .. } => {
+            (None, Algorithm::Rsa { .. }) => {
                 let pair = RsaKeypair::random(&mut rand::rng(), 2048).unwrap();
                 PrivateKey::new(KeypairData::from(pair), "").unwrap()
             }
-            algorithm => PrivateKey::random(&mut rand::rng(), algorithm).unwrap(),
+            (None, algorithm) => PrivateKey::random(&mut rand::rng(), algorithm).unwrap(),
         };
         let config = russh::server::Config {
             keys: vec![host_key.clone()],

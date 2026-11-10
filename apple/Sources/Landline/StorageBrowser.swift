@@ -17,6 +17,9 @@ protocol StorageService: AnyObject {
     func upload(
         _ local: URL, to remote: String, on deviceId: String,
         onTransfer: @escaping @MainActor (UInt64) -> Void) async throws
+    /// Stops a running download or upload. Its call then throws
+    /// `LandlineError.Cancelled`.
+    func cancelStorageTransfer(_ transferId: UInt64, on deviceId: String)
 }
 
 /// A folder on the phone, inside one of its storage roots.
@@ -569,10 +572,23 @@ final class StorageBrowserModel {
             }
             operations.removeAll { $0.id == id }
             return true
+        } catch LandlineError.Cancelled {
+            // The user stopped it; that is not a failure to report.
+            operations.removeAll { $0.id == id }
+            return false
         } catch {
             update(id) { $0.state = .failed(message(for: error)) }
             return false
         }
+    }
+
+    /// Stops the download or upload that is running now. The ones queued
+    /// behind it carry on.
+    func stopRunningOperation() {
+        guard let running = operations.first(where: { $0.state == .running }),
+            let transferId = running.transferId
+        else { return }
+        service.cancelStorageTransfer(transferId, on: deviceId)
     }
 
     private func update(_ id: UUID, _ change: (inout BrowserOperation) -> Void) {
@@ -640,6 +656,8 @@ final class StorageBrowserModel {
                 previewToken = nil
                 previewState = nil
                 previewURL = local
+            } catch LandlineError.Cancelled {
+                // Stopped by `cancelPreview`, which has already reset the state.
             } catch {
                 guard previewToken == token else { return }
                 previewToken = nil
@@ -649,10 +667,12 @@ final class StorageBrowserModel {
         }
     }
 
-    /// Escape, or closing the preview. The core cannot stop a storage
-    /// download, so one already running finishes into the cache, which is
-    /// deleted with the window.
+    /// Escape, or closing the preview. Stops the download feeding it, if
+    /// one is still running.
     func cancelPreview() {
+        if case .preparing(_, let transferId?) = previewState {
+            service.cancelStorageTransfer(transferId, on: deviceId)
+        }
         previewToken = nil
         previewState = nil
         previewURL = nil

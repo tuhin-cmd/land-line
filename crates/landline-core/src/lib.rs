@@ -62,6 +62,9 @@ pub enum CoreError {
     /// Browsing or transferring the device's files failed.
     #[error("{0}")]
     Storage(String),
+    /// The transfer was stopped with [`Core::cancel_transfer`].
+    #[error("cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -289,8 +292,8 @@ impl Core {
         self.plugin(device_id, plugins::Command::SendFiles { paths })
     }
 
-    /// Stops a transfer with that device. An incoming file's partial copy
-    /// is deleted.
+    /// Stops a transfer with that device, whether a shared file or a storage
+    /// download or upload. An incoming file's partial copy is deleted.
     pub fn cancel_transfer(&self, device_id: &str, transfer_id: u64) -> Result<(), CoreError> {
         let id = transfer_id;
         self.plugin(device_id, plugins::Command::CancelTransfer { id })

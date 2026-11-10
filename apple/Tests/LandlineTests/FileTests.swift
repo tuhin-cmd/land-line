@@ -65,7 +65,6 @@ import Testing
         #expect(reported == 7)
         #expect(shown.isEmpty)
         #expect(model.transfer(7)?.origin == .storage)
-        #expect(model.transfer(7)?.canCancel == false)
     }
 
     @Test func aTransferReportedAfterTheCallReturnedIsStillRecognised() async throws {

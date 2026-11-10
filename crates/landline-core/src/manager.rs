@@ -768,6 +768,22 @@ impl Manager {
     }
 
     fn plugin_command(&mut self, device_id: &str, command: plugins::Command) {
+        // A transfer ID does not say which plugin runs the transfer, so
+        // both that have transfers hear about a cancellation.
+        if let plugins::Command::CancelTransfer { id } = command {
+            for name in [
+                plugins::share::REGISTRATION.name,
+                plugins::sftp::REGISTRATION.name,
+            ] {
+                let handler = REGISTRY.iter().position(|plugin| plugin.name == name);
+                if let Some(index) = handler {
+                    self.plugins(device_id, |plugins, ctx| {
+                        plugins[index].command(plugins::Command::CancelTransfer { id }, ctx);
+                    });
+                }
+            }
+            return;
+        }
         let usable = self
             .devices
             .get(device_id)

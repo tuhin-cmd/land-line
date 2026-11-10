@@ -5,10 +5,9 @@ import LandlineKit
 /// The core reports all of them the same way, so the app tells them apart
 /// by remembering which storage calls it made.
 enum TransferOrigin: Equatable, Sendable {
-    /// Shared from the phone, or sent from the Mac. Can be cancelled.
+    /// Shared from the phone, or sent from the Mac.
     case shared
-    /// A storage browser download or upload. The core has no way to stop
-    /// one, so it offers no cancel.
+    /// A storage browser download or upload.
     case storage
     /// A download into the preview cache. Not listed: the browser window
     /// shows its progress, and the file is thrown away afterwards.
@@ -24,7 +23,7 @@ struct TransferEntry: Identifiable, Equatable {
 
     var id: UInt64 { transfer.id }
     var isActive: Bool { transfer.state == .inProgress }
-    var canCancel: Bool { isActive && origin == .shared }
+    var canCancel: Bool { isActive }
 
     /// The saved file, once an incoming transfer has finished.
     var finishedPath: String? {

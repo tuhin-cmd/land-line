@@ -24,3 +24,10 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "ma
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tracing = "0.1.44"
 x509-parser = "0.18.1"
+
+[dev-dependencies]
+# For the in-process SFTP server borrowed from landline-sftp's tests.
+rand = { version = "0.10.3", features = ["thread_rng"] }
+russh = { version = "0.63.1", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "3.0.1"
+tempfile = "3.27.0"

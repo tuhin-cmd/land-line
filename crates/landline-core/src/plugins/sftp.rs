@@ -6,6 +6,7 @@
 //! and the folders worth showing. The session is then kept until it breaks
 //! or the device disconnects, and asked for again when next needed.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -110,6 +111,8 @@ struct State {
     /// Bumped on disconnect, so a session that finishes connecting
     /// afterwards is discarded rather than kept for a link that is gone.
     generation: u64,
+    /// How to stop each running download or upload, by transfer ID.
+    running: HashMap<u64, oneshot::Sender<()>>,
 }
 
 #[derive(Default)]
@@ -126,6 +129,8 @@ impl Plugin for Sftp {
         let mut state = lock(&self.state);
         state.generation += 1;
         state.mount = None;
+        // Dropping the senders stops every running transfer.
+        state.running.clear();
         for waiter in state.waiters.drain(..) {
             let _ = waiter.send(Err(CoreError::NotReachable));
         }
@@ -195,8 +200,15 @@ impl Plugin for Sftp {
     }
 
     fn command(&mut self, command: Command, ctx: &mut Context<'_>) {
-        let Command::Storage(request) = command else {
-            return;
+        let request = match command {
+            Command::Storage(request) => request,
+            Command::CancelTransfer { id } => {
+                if let Some(stop) = lock(&self.state).running.remove(&id) {
+                    let _ = stop.send(());
+                }
+                return;
+            }
+            _ => return,
         };
         let Some(link) = ctx.link.clone() else {
             request.fail(CoreError::NotReachable);
@@ -212,7 +224,7 @@ impl Plugin for Sftp {
                 Ok(mount) => mount,
                 Err(error) => return request.fail(error),
             };
-            let broken = run(request, &mount, &reporter).await;
+            let broken = run(request, &mount, &reporter, &state).await;
             if broken {
                 // Forget the session so the next request asks the phone for
                 // a new one.
@@ -330,7 +342,7 @@ impl Progress<'_> {
 
 /// Carries out `request` and answers it. Returns whether the session turned
 /// out to be dead.
-async fn run(request: Request, mount: &Mount, reporter: &Reporter) -> bool {
+async fn run(request: Request, mount: &Mount, reporter: &Reporter, state: &Mutex<State>) -> bool {
     let session = &mount.session;
     match request {
         Request::Roots { reply } => {
@@ -351,24 +363,31 @@ async fn run(request: Request, mount: &Mount, reporter: &Reporter) -> bool {
             });
             let _ = reply.send(entries.map_err(|error| storage_error(&error)));
         }
-        // The caller dropping its future (closing the reply channel) cancels
-        // a transfer: the SFTP client cleans up after itself when dropped.
+        // A transfer ends early when the app cancels it by ID, or when the
+        // caller drops its future (closing the reply channel). Either way
+        // the SFTP client cleans up after itself when its future is dropped.
         Request::Download {
             remote,
             local,
             mut reply,
         } => {
             let mut progress = reporter.start(&local, TransferDirection::Incoming);
+            let stop = register(state, progress.transfer.id);
             let done = tokio::select! {
                 done = session.download(&remote, &local, |done, total| progress.advance(done, total)) => Some(done),
                 () = reply.closed() => None,
+                _ = stop => None,
             };
+            lock(state).running.remove(&progress.transfer.id);
             match done {
                 Some(done) => {
                     progress.finish(&done, local);
                     let _ = reply.send(done.map_err(|error| storage_error(&error)));
                 }
-                None => progress.cancel(),
+                None => {
+                    progress.cancel();
+                    let _ = reply.send(Err(CoreError::Cancelled));
+                }
             }
         }
         Request::Upload {
@@ -377,20 +396,34 @@ async fn run(request: Request, mount: &Mount, reporter: &Reporter) -> bool {
             mut reply,
         } => {
             let mut progress = reporter.start(&local, TransferDirection::Outgoing);
+            let stop = register(state, progress.transfer.id);
             let done = tokio::select! {
                 done = session.upload(&local, &remote, |done, total| progress.advance(done, total)) => Some(done),
                 () = reply.closed() => None,
+                _ = stop => None,
             };
+            lock(state).running.remove(&progress.transfer.id);
             match done {
                 Some(done) => {
                     progress.finish(&done, local);
                     let _ = reply.send(done.map_err(|error| storage_error(&error)));
                 }
-                None => progress.cancel(),
+                None => {
+                    progress.cancel();
+                    let _ = reply.send(Err(CoreError::Cancelled));
+                }
             }
         }
     }
     session.is_closed()
+}
+
+/// Records how to stop the transfer with this ID, and returns the signal to
+/// wait on.
+fn register(state: &Mutex<State>, transfer_id: u64) -> oneshot::Receiver<()> {
+    let (stop, stopped) = oneshot::channel();
+    lock(state).running.insert(transfer_id, stop);
+    stopped
 }
 
 /// The folders the phone suggests browsing from: each `multiPaths` entry
@@ -454,10 +487,153 @@ fn clone_result(result: &Result<Mount, CoreError>) -> Result<Mount, CoreError> {
     }
 }
 
+/// The in-process SFTP server the SFTP crate tests itself against, standing
+/// in for the phone's.
+#[cfg(test)]
+#[path = "../../../landline-sftp/tests/common/mod.rs"]
+mod test_server;
+
 #[cfg(test)]
 mod tests {
+    use super::test_server::{Options, PASSWORD, TestServer, USER};
     use super::*;
-    use crate::plugins::testing::Harness;
+    use crate::plugins::share::{TransferDirection, TransferState};
+    use crate::plugins::testing::{Event, Harness};
+
+    /// A server set up as the phone's is: its SSH host key is the KDE
+    /// Connect identity key behind the certificate pinned at pairing.
+    async fn phone_server(harness: &Harness) -> TestServer {
+        let identity_key = harness.peer_identity.private_key_der().secret_pkcs8_der();
+        let host_key = russh::keys::pkcs8::decode_pkcs8(identity_key, None).unwrap();
+        TestServer::start_with(Options {
+            host_private_key: Some(host_key),
+            ..Options::default()
+        })
+        .await
+    }
+
+    /// What the phone answers a browse request with.
+    fn server_details(server: &TestServer) -> Packet {
+        packet(serde_json::json!({
+            // The phone's guess at its own address; it must be ignored.
+            "ip": "203.0.113.9",
+            "port": server.address.port(),
+            "user": USER,
+            "password": PASSWORD,
+            "path": "/",
+            "multiPaths": ["/"],
+            "pathNames": ["Internal storage"],
+        }))
+    }
+
+    fn request<T>(
+        plugin: &mut Box<dyn Plugin>,
+        harness: &mut Harness,
+        make: impl FnOnce(Reply<T>) -> Request,
+    ) -> oneshot::Receiver<Result<T, CoreError>> {
+        let (reply, answer) = oneshot::channel();
+        plugin.command(Command::Storage(make(reply)), &mut harness.ctx());
+        answer
+    }
+
+    #[tokio::test]
+    async fn the_phones_storage_is_listed_and_downloaded() {
+        let mut harness = Harness::new();
+        let server = phone_server(&harness).await;
+        std::fs::create_dir(server.path("DCIM")).unwrap();
+        let photo: Vec<u8> = (0..400_000u32).map(|i| (i % 253) as u8).collect();
+        std::fs::write(server.path("DCIM/photo.jpg"), &photo).unwrap();
+        let mut plugin = (REGISTRATION.create)();
+
+        // The first request asks the phone to start its server.
+        let roots = request(&mut plugin, &mut harness, |reply| Request::Roots { reply });
+        assert_eq!(harness.next_sent().await.kind, TYPE_SFTP_REQUEST);
+        plugin.packet(&server_details(&server), &mut harness.ctx());
+        assert_eq!(
+            roots.await.unwrap().unwrap(),
+            [StorageRoot {
+                name: "Internal storage".into(),
+                path: "/".into()
+            }]
+        );
+
+        // Later requests use the same session without asking again.
+        let path = "/DCIM".to_owned();
+        let listing = request(&mut plugin, &mut harness, |reply| Request::List {
+            path,
+            reply,
+        });
+        let entries = listing.await.unwrap().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "photo.jpg");
+        assert_eq!(entries[0].path, "/DCIM/photo.jpg");
+        assert_eq!(entries[0].size, 400_000);
+        assert!(harness.sent().is_empty());
+
+        let local = harness.download_dir.join("photo.jpg");
+        std::fs::create_dir_all(&harness.download_dir).unwrap();
+        let download = request(&mut plugin, &mut harness, |reply| Request::Download {
+            remote: "/DCIM/photo.jpg".into(),
+            local: local.clone(),
+            reply,
+        });
+        download.await.unwrap().unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), photo);
+
+        // It was reported as a transfer, from start to finish.
+        let transfers: Vec<_> = harness
+            .recorder
+            .take()
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Transfer(transfer) => Some(transfer),
+                _ => None,
+            })
+            .collect();
+        let (first, last) = (transfers.first().unwrap(), transfers.last().unwrap());
+        assert_eq!(first.state, TransferState::InProgress);
+        assert_eq!(first.direction, TransferDirection::Incoming);
+        assert_eq!(first.file_name, "photo.jpg");
+        assert_eq!(last.state, TransferState::Finished { path: local });
+        assert_eq!(last.bytes_done, 400_000);
+        assert!(transfers.iter().all(|transfer| transfer.id == first.id));
+    }
+
+    #[tokio::test]
+    async fn uploads_reach_the_phone() {
+        let mut harness = Harness::new();
+        let server = phone_server(&harness).await;
+        let mut plugin = (REGISTRATION.create)();
+        std::fs::create_dir_all(&harness.download_dir).unwrap();
+        let local = harness.download_dir.join("notes.txt");
+        std::fs::write(&local, b"from the Mac").unwrap();
+
+        let upload = request(&mut plugin, &mut harness, |reply| Request::Upload {
+            local,
+            remote: "/notes.txt".into(),
+            reply,
+        });
+        harness.next_sent().await;
+        plugin.packet(&server_details(&server), &mut harness.ctx());
+        upload.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(server.path("notes.txt")).unwrap(),
+            b"from the Mac"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_without_the_devices_key_is_refused() {
+        let mut harness = Harness::new();
+        // Someone else answering on that port has their own key.
+        let impostor = TestServer::start().await;
+        let mut plugin = (REGISTRATION.create)();
+
+        let roots = request(&mut plugin, &mut harness, |reply| Request::Roots { reply });
+        harness.next_sent().await;
+        plugin.packet(&server_details(&impostor), &mut harness.ctx());
+        assert!(matches!(roots.await.unwrap(), Err(CoreError::Storage(_))));
+    }
 
     fn packet(body: serde_json::Value) -> Packet {
         let serde_json::Value::Object(body) = body else {

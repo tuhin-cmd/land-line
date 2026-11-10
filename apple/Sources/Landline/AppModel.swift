@@ -784,6 +784,12 @@ extension AppModel: StorageService {
         }
     }
 
+    func cancelStorageTransfer(_ transferId: UInt64, on deviceId: String) {
+        // Nothing useful to tell the user if this fails: the transfer has
+        // then already ended or the device has gone.
+        try? backend?.cancelTransfer(transferId, on: deviceId)
+    }
+
     func upload(
         _ local: URL, to remote: String, on deviceId: String, onTransfer: @escaping @MainActor (UInt64) -> Void
     ) async throws {
