@@ -15,5 +15,8 @@ let package = Package(
         .target(name: "LandlineKit", dependencies: ["LandlineFFI"]),
         .executableTarget(name: "Landline", dependencies: ["LandlineKit"]),
         .testTarget(name: "LandlineKitTests", dependencies: ["LandlineKit"]),
+        // The app's model and presentation logic, tested through the
+        // executable target so they need no library of their own.
+        .testTarget(name: "LandlineTests", dependencies: ["Landline", "LandlineKit"]),
     ]
 )
