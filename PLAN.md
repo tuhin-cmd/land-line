@@ -35,18 +35,25 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 | Milestone | State |
 |---|---|
 | M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
-| M1: discovery, TLS, pairing | Built (2026-11-10) and working against the real phone: the OnePlus 15 running stock KDE Connect was discovered, paired from the Mac with a matching verification key, and reconnects as paired under the pinned certificate in both the CLI and the app. The menu bar panel lists devices and handles pairing in both directions (`--demo` shows every state without a network). **Still owed for the exit check:** a ping from the phone seen on the Mac, the owner confirming the Mac's ping showed on the phone, and the link coming back after toggling Wi-Fi on each device. Also untested on the real phone: pairing started from the phone, and unpairing. |
-| M2: notifications and OTP | Built in the core and the app (2026-11-10). **Seen working with the phone:** a real notification mirrored into the app's panel with its icon (which also exercises a payload download), and the battery level. **Not yet seen:** a Mac banner and its actions, a real one-time code arriving by SMS, and dismissing from the Mac. |
-| M3: clipboard | Built in the core and the app. Covered by the two-device loopback test and Swift tests with a fake pasteboard. Not yet confirmed with the phone in either direction. |
-| M4: files | Built in the core and the app: receive into the chosen folder with safe names, send from a device's menu, by dropping on its row or on the menu bar icon, progress and cancel. A file crosses between two cores in the loopback test. Not yet tried with the phone. Drag and drop was built but not exercised on screen. |
-| M5: storage | Built: `crates/landline-sftp` (tested against an in-process server and macOS's own sshd), the storage plugin, and a browser window with Quick Look, download, upload and drag out. Not yet tried with the phone. No File Provider extension (needs Xcode's extension tooling). |
-| M6: polish | Built: Settings window, launch at login, notification permission handling, muted apps, download folder, log export, blocked-network warning. **Not done:** Developer ID signing and notarization (needs an Apple Developer account), and the week of real use. |
+| M1: discovery, TLS, pairing | Built and working with the phone (OnePlus 15, stock KDE Connect). Seen: discovery, pairing from the Mac with a matching key, reconnecting as paired, and the link returning by itself after the phone slept (12 s) and after it left the network for 45 minutes. **Not yet seen:** a ping from the phone, pairing started from the phone, and unpairing. |
+| M2: notifications and OTP | Built in the core and the app. Seen with the phone: real notifications from several apps with icons, removals, the battery level, a real SMS arriving unprompted, and **a real six-digit code found in an SMS 10 ms after it arrived**. Not confirmed by the owner yet: the Mac banner and its actions, the code landing on the clipboard, and dismissing from the Mac. |
+| M3: clipboard | Built. Seen with the phone: text sent from the Mac became the phone's clipboard. Not yet seen: text sent from the phone. |
+| M4: files | Built. Seen with the phone: two files sent from the Mac in one batch, and a file shared from the phone received by the app. Not yet tried: a 1 GB file, cancelling mid-transfer on the real phone, and drag and drop. |
+| M5: storage | Built: `crates/landline-sftp`, the storage plugin, and a browser window. Seen with the phone: roots and folders listed (a folder of 2,753 files), a 5 MB file uploaded and downloaded back with an identical checksum, and the app's browser window listing the phone. Not yet tried: Quick Look and drag out on the real phone. No File Provider extension (needs Xcode's extension tooling). |
+| M6: polish | Built: Settings window, launch at login, notification permission handling, muted apps, download folder, log export, blocked-network warning, Stop for storage transfers. **Not done:** Developer ID signing and notarization (needs an Apple Developer account), and the week of real use. |
 
 **What only the owner can do next**
 
-1. Allow Landline under System Settings > Privacy & Security > Local Network when macOS asks (and again after each rebuild, unless `LANDLINE_SIGN_IDENTITY` is set up; see `README.md`). Until then the Mac cannot open connections to the phone.
-2. On the phone, grant KDE Connect's plugins their permissions: notifications, SMS and phone, and "All files access".
-3. Try each feature once and note what breaks: a real OTP SMS, copy on each side, a file each way (including a large one), browsing `DCIM/Camera`, toggling Wi-Fi on each device, pairing from the phone, unpairing.
+1. On the phone: send a ping, send the clipboard, unpair, and pair again from the phone.
+2. Confirm what only eyes can: Mac notification banners and their actions, a code arriving on the clipboard, drag and drop onto a device and out of the storage browser, Quick Look.
+3. Set up a signing certificate (`LANDLINE_SIGN_IDENTITY`, see `README.md`) so rebuilds keep their Local Network permission.
+
+Things learned from the live runs:
+
+- **The phone announces itself every few minutes**, and each announcement ends in a new link replacing the old one. Plugins hear `link_replaced` rather than a disconnect, so mirrored notifications and the storage session survive.
+- **A sleeping phone looks briefly like a missing permission**: one "no route to host", then "host is down", then sends that leave normally. Only three refusals in a row count as blocked.
+- **Local Network permission follows the process that owns the socket.** For the CLI under an agent that is the agent's host app (and its `claude` helper), not the terminal emulator.
+- OxygenOS dropped the link about two minutes after the screen went off until the next broadcast woke it. Exempting KDE Connect from battery optimisation (Risk 5) is still to be confirmed as the cure.
 
 Notes from M0 that later milestones should know:
 
