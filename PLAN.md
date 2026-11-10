@@ -36,7 +36,11 @@ Screen mirroring, remote input, media control, telephony, running over the inter
 |---|---|
 | M0: skeleton | **Done** (2026-11-10). Rust checks and Swift bridge tests pass, and `scripts/build-app.sh` produces a signed `build/Landline.app` whose menu reads "Landline core 0.1.0". |
 | M1: discovery, TLS, pairing | Built (2026-11-10) and working against the real phone: the OnePlus 15 running stock KDE Connect was discovered, paired from the Mac with a matching verification key, and reconnects as paired under the pinned certificate in both the CLI and the app. The menu bar panel lists devices and handles pairing in both directions (`--demo` shows every state without a network). **Still owed for the exit check:** a ping from the phone seen on the Mac, the owner confirming the Mac's ping showed on the phone, and the link coming back after toggling Wi-Fi on each device. Also untested on the real phone: pairing started from the phone, and unpairing. |
-| M2 onward | Not started |
+| M2: notifications and OTP | Core and bridge built (2026-11-10): notifications with cached icons, battery, SMS, one-time code extraction (70-case table in English and Bangla). Unit-tested against packet shapes from the Android source; **not yet seen with real notifications or a real OTP SMS** (the phone had not granted KDE Connect notification access when last checked). |
+| M3: clipboard | Core and bridge built. Covered by the two-device loopback test. Not yet tried with the phone. |
+| M4: files | Core and bridge built: receive into the download folder with safe names, send with per-file ports, progress and cancel. A file crosses between two cores in the loopback test. Not yet tried with the phone. |
+| M5: storage | `crates/landline-sftp` (russh client, tested against an in-process server and macOS's own sshd) plus the storage plugin in the core. Not yet tried with the phone. |
+| M6: polish | In progress. |
 
 Notes from M0 that later milestones should know:
 
@@ -142,16 +146,17 @@ Checked against the `KDE/kdeconnect-android` source (commit `207dcdb`, 2026-11-0
 
 **Payloads.** The sender listens on a port from 1739 up and names it in `payloadTransferInfo`. The receiver connects to it. Here the roles are *not* inverted: the sender (TCP listener) is the TLS server.
 
-**Packet types by feature.**
+**Packet types by feature.** All checked against the Android source.
 
-| Feature | Types |
+| Feature | Types and behaviour |
 |---|---|
-| Notifications | `kdeconnect.notification` (phone to Mac; `id`, `appName`, `title`, `text`, `ticker`, `isCancel`, `isClearable`, `time`, icon as payload), `kdeconnect.notification.request` (`{"request": true}` to fetch all, `{"cancel": id}` to dismiss), `.reply`, `.action` |
-| SMS | `kdeconnect.sms.messages` (phone to Mac), `kdeconnect.sms.request_conversations`, `kdeconnect.sms.request_conversation` |
-| Clipboard | `kdeconnect.clipboard` (`content`), `kdeconnect.clipboard.connect` (`content`, `timestamp`) |
-| File send | `kdeconnect.share.request` (`filename`, or `text`, or `url`; file bytes as payload), `kdeconnect.share.request.update` |
-| File browse | `kdeconnect.sftp.request` (`{"startBrowsing": true}`), answered by `kdeconnect.sftp` (`ip`, `port`, `user`, `password`, `path`, `multiPaths`, `pathNames`) |
-| Health | `kdeconnect.ping`, `kdeconnect.battery` |
+| Notifications | `kdeconnect.notification`, phone to Mac: `id`, `appName`, `time` (ms, as a string), `isClearable`, `silent`, `ticker`, and `title` and `text` only if the app set them; `{id, isCancel: true}` for removal. The app icon is a PNG payload named by `payloadHash` (MD5), attached only the first time that hash goes out on a connection. `kdeconnect.notification.request`, Mac to phone: `{"request": true}` resends everything with `silent: true`; `{"cancel": id}` dismisses. The phone also pushes its current notifications unprompted, silent, when its plugin starts. |
+| Battery | `kdeconnect.battery`, phone to Mac, unprompted on connect and on change: `currentCharge`, `isCharging`, `thresholdEvent`. There is no request packet. |
+| SMS | `kdeconnect.sms.messages`, phone to Mac: `{version: 2, messages: [...]}`, each with `addresses`, `body`, `date` (ms), `type` (1 = inbox), `read`, `thread_id`, `_id`, `event` (bit 1 = has text). **The phone pushes new messages only after we have sent a request on that connection**, so on every connect we send `kdeconnect.sms.request_conversation` for thread -1 (matches nothing, answers empty) and repeat it every five minutes, because the phone recreates its plugin and forgets. Each push carries everything from the newest message it had seen, so the same message arrives repeatedly; we report a message once, and only if it is newer than the connection. |
+| Clipboard | `kdeconnect.clipboard` `{content}` on every change; `kdeconnect.clipboard.connect` `{content, timestamp}` once when a link comes up, where the newer clipboard wins. We never send the connect packet, because the core does not hold the Mac's clipboard. |
+| Share | `kdeconnect.share.request`: `{text}`, or `{url}`, or `{filename, lastModified, numberOfFiles, totalPayloadSize, open}` with the bytes as payload (`payloadSize` -1 if unknown; an empty file has no payload). `kdeconnect.share.request.update` `{numberOfFiles, totalPayloadSize}` when files join a running batch. The phone sends one file at a time, each on a fresh port. When receiving, it waits **one second** after each file for the next packet and fails the whole batch otherwise, so we send files strictly one after another. |
+| Storage | `kdeconnect.sftp.request` `{startBrowsing: true}`, answered by `kdeconnect.sftp`: `port`, `user` (always `kdeconnect`), `password` (random, per request), `path`, `multiPaths`, `pathNames`; or `{errorMessage}`. The `ip` field is the phone's guess and is ignored in favour of the link's address. **The server's SSH host key is the phone's KDE Connect identity key**, so it is checked against the certificate pinned at pairing. |
+| Ping | `kdeconnect.ping`, either way, empty body. |
 
 Capabilities the Mac does not list in its identity are never sent to it, so advertise only what is implemented.
 
@@ -230,12 +235,12 @@ Each milestone ends with something demonstrable on the real phone. Do not start 
 
 ## Risks and spikes
 
-1. **Android redacts OTP notifications (highest risk).** Since Android 15, notifications the system classifies as carrying a one-time code are redacted for ordinary notification-listener apps. The plan therefore relies on the SMS plugin, which reads SMS directly, for SMS codes. Codes delivered only as app notifications (banking apps, email) may be unreachable. **Spike in M1:** trigger real OTPs and record exactly what `kdeconnect.notification` and `kdeconnect.sms.messages` contain. Also confirm the SMS plugin pushes new messages unprompted. The result decides how M2 is built.
-2. **Android blocks background clipboard reads.** Since Android 10, an app not in the foreground cannot read the clipboard, so phone-to-Mac sync cannot be fully automatic on a stock phone. Options, in order of preference: the KDE Connect "send clipboard" action or quick-settings tile; granting `READ_LOGS` over ADB (a workaround KDE Connect supports); an own Android fork with a different trigger. Pick after trying the first.
+1. **Android redacts OTP notifications (highest risk).** *Update: the SMS route is built and does not depend on notifications; see the SMS row in the packet table for what it needs. The phone must grant KDE Connect the SMS, phone and notification permissions.* Since Android 15, notifications the system classifies as carrying a one-time code are redacted for ordinary notification-listener apps. The plan therefore relies on the SMS plugin, which reads SMS directly, for SMS codes. Codes delivered only as app notifications (banking apps, email) may be unreachable. **Spike in M1:** trigger real OTPs and record exactly what `kdeconnect.notification` and `kdeconnect.sms.messages` contain. Also confirm the SMS plugin pushes new messages unprompted. The result decides how M2 is built.
+2. **Android blocks background clipboard reads.** *Confirmed: after copying on the phone, the user taps "Send clipboard" in KDE Connect or its quick-settings tile. Granting `READ_LOGS` over ADB makes it automatic.* Since Android 10, an app not in the foreground cannot read the clipboard, so phone-to-Mac sync cannot be fully automatic on a stock phone. Options, in order of preference: the KDE Connect "send clipboard" action or quick-settings tile; granting `READ_LOGS` over ADB (a workaround KDE Connect supports); an own Android fork with a different trigger. Pick after trying the first.
 3. **TLS interoperability.** The inverted roles, self-signed certificates, and whatever key types and TLS versions the Android app offers must all work with `rustls` behind custom verifiers. If `rustls` cannot be made to interoperate, fall back to the `openssl` crate rather than fighting it.
-4. **SFTP interoperability.** The phone's SFTP server is an embedded Java SSH server that may offer only older key-exchange or host-key algorithms. `russh` may need them enabled explicitly. Also, Android's storage rules limit what the server can expose; the phone app may need "All files access" or folders added in its SFTP settings.
+4. **SFTP interoperability.** *Update: the phone's server (Apache SSHD) offers ECDH on the NIST curves, group14, AES-CTR/GCM and SHA-2 MACs with an ECDSA P-256 or RSA host key; the client enables the ones russh leaves off. Android 11+ needs "All files access" for KDE Connect; older versions need folders added in the plugin's settings.* The phone's SFTP server is an embedded Java SSH server that may offer only older key-exchange or host-key algorithms. `russh` may need them enabled explicitly. Also, Android's storage rules limit what the server can expose; the phone app may need "All files access" or folders added in its SFTP settings.
 5. **OxygenOS battery management.** The phone app must be exempt from battery optimization and allowed to auto-launch, or the link dies with the screen off. Document the exact toggles once found.
-6. **macOS Local Network privacy.** Without the permission the app silently sees no devices. Detect that state and explain it in the UI rather than showing an empty list.
+6. **macOS Local Network privacy.** Confirmed in practice, and subtler than expected: without the permission, broadcasts still leave the Mac and devices can still connect *to* it, so the phone appears and pairing works. What fails is every connection the Mac opens to the phone: answering the phone's announcement, fetching a file or icon, SFTP, and announcing to a known address. Each fails at once with "No route to host". The core treats that as `NetworkStatus::Blocked`. The permission belongs to the app that owns the process: for the CLI that is the terminal it runs in.
 7. **UniFFI async and callbacks into Swift.** Prove the pattern end to end in M0 with a trivial async function and one callback before building real features on it.
 
 ## Phone setup checklist
