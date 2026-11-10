@@ -99,11 +99,22 @@ final class SystemNotificationCenter: NSObject, NotificationCenterClient {
         }
 
         let request = UNNotificationRequest(identifier: banner.id, content: content, trigger: nil)
+        // The kind only: titles and bodies come from the phone and stay out
+        // of the log.
+        let kind = switch banner.category {
+        case .phoneNotification: "phone notification"
+        case .code: "one-time code"
+        case .receivedFile, .receivedFiles: "received file"
+        case .link: "link"
+        case .info: "info"
+        }
         do {
             try await center.add(request)
+            Log.notifications.notice("Banner posted: \(kind, privacy: .public)")
         } catch {
             // Usually means notifications are off for the app.
-            Log.notifications.info("Banner not shown: \(error.localizedDescription, privacy: .public)")
+            Log.notifications.notice(
+                "Banner not shown (\(kind, privacy: .public)): \(error.localizedDescription, privacy: .public)")
         }
     }
 
