@@ -24,6 +24,8 @@ Work in progress. See [PLAN.md](PLAN.md) for the design, the protocol notes, and
 
 ## Set up the Mac
 
+macOS asks for three things, each once: to send notifications, to access the Downloads folder (when the first file arrives from the phone; the file waits for your answer), and to find devices on your local network.
+
 The first time the app tries to reach the phone, macOS asks whether Landline may find devices on your local network. Allow it: without it the phone still appears, but files, storage and reconnecting fail, and the panel says so. The setting is under System Settings > Privacy & Security > Local Network.
 
 ## Build

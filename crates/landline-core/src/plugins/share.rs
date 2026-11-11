@@ -141,12 +141,31 @@ struct Share {
     /// anyway, and a sender that announces the next file early (the desktop
     /// app does) serves it only after the current one.
     receive_lane: Option<oneshot::Receiver<()>>,
-    /// Files waiting to go to the device on the current link.
+    /// Files waiting to go to the device.
     outbox: Arc<Mutex<Outbox>>,
+    /// The device's current link, for tasks that send packets over time.
+    link: SharedLink,
 }
 
+/// The link to send packets on right now: `None` while disconnected, and
+/// swapped when a new link replaces the old one.
+type SharedLink = Arc<Mutex<Option<LinkContext>>>;
+
 impl Plugin for Share {
+    fn connected(&mut self, ctx: &mut Context<'_>) {
+        *lock(&self.link) = ctx.link.clone();
+    }
+
+    // Phones announce themselves every few minutes, most of all while the
+    // user has KDE Connect open to share something, and each announcement
+    // replaces the link. Files travel on their own connections, so running
+    // transfers carry on; only later packets need the new link.
+    fn link_replaced(&mut self, ctx: &mut Context<'_>) {
+        *lock(&self.link) = ctx.link.clone();
+    }
+
     fn disconnected(&mut self, _ctx: &mut Context<'_>) {
+        *lock(&self.link) = None;
         for stop in lock(&self.stops).values() {
             stop.send_replace(Some(Stop::Disconnected));
         }
@@ -221,6 +240,7 @@ impl Share {
         tokio::spawn(async move {
             let _registered = registered;
             let _done = done;
+            let removal = Removal::default();
             let state = tokio::select! {
                 biased;
                 stop = stopped(&mut stop) => stop.state(),
@@ -228,20 +248,24 @@ impl Share {
                     if let Some(previous) = previous {
                         let _ = previous.await;
                     }
-                    receive(job, &mut reporter).await
+                    receive(job, &mut reporter, &removal).await
                 } => match result {
                     Ok(path) => TransferState::Finished { path },
                     Err(error) => TransferState::Failed { reason: error.to_string() },
                 },
             };
+            // The partial file is gone before the end is reported, unless
+            // deleting it is stuck.
+            removed(&removal).await;
             reporter.finish(state);
         });
     }
 
     fn send_files(&mut self, paths: Vec<PathBuf>, ctx: &mut Context<'_>) {
-        let Some(link) = ctx.link.clone() else {
+        if ctx.link.is_none() {
             return;
-        };
+        }
+        let link = Arc::clone(&self.link);
         let delegate = Arc::clone(ctx.delegate);
         let device_id = ctx.device_id.to_owned();
         let stops = Arc::clone(&self.stops);
@@ -289,7 +313,7 @@ impl Share {
                     outbox.queue.push_back(file);
                 }
                 if outbox.announced {
-                    link.sender.send(outbox.update_packet());
+                    let _ = send(&link, outbox.update_packet());
                 }
                 !std::mem::replace(&mut outbox.running, true)
             };
@@ -311,9 +335,13 @@ struct IncomingFile {
 
 /// Fetches one file into the download directory and returns where it went.
 /// If this fails or is dropped part way, the partial file is deleted.
-async fn receive(job: IncomingFile, reporter: &mut Reporter) -> io::Result<PathBuf> {
+async fn receive(
+    job: IncomingFile,
+    reporter: &mut Reporter,
+    removal: &Removal,
+) -> io::Result<PathBuf> {
     fs::create_dir_all(&job.dir).await?;
-    let (part, mut file) = PartFile::claim(&job.dir, &job.name).await?;
+    let (part, mut file) = PartFile::claim(&job.dir, &job.name, removal).await?;
     if let Some(payload) = job.payload {
         let expected = payload.size();
         let mut reader = payload.open().await?;
@@ -342,12 +370,13 @@ async fn receive(job: IncomingFile, reporter: &mut Reporter) -> io::Result<PathB
 struct PartFile {
     path: PathBuf,
     armed: bool,
+    removal: Removal,
 }
 
 impl PartFile {
     /// Creates the temporary file for the first free variant of `name`: one
     /// where neither the file nor its temporary twin exists.
-    async fn claim(dir: &Path, name: &str) -> io::Result<(Self, File)> {
+    async fn claim(dir: &Path, name: &str, removal: &Removal) -> io::Result<(Self, File)> {
         for n in 1..=MAX_VARIANTS {
             let candidate = numbered(name, n);
             if exists(&dir.join(&candidate)).await? {
@@ -360,7 +389,14 @@ impl PartFile {
                 .open(&path)
                 .await
             {
-                Ok(file) => return Ok((Self { path, armed: true }, file)),
+                Ok(file) => {
+                    let part = Self {
+                        path,
+                        armed: true,
+                        removal: Arc::clone(removal),
+                    };
+                    return Ok((part, file));
+                }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
             }
@@ -400,9 +436,36 @@ impl PartFile {
 
 impl Drop for PartFile {
     fn drop(&mut self) {
-        if self.armed {
-            let _ = std::fs::remove_file(&self.path);
+        if !self.armed {
+            return;
         }
+        let path = std::mem::take(&mut self.path);
+        // Deleting can block for as long as macOS waits for the user to
+        // allow access to the folder, and this runs on an async worker.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let removal = runtime.spawn_blocking(move || {
+                    let _ = std::fs::remove_file(path);
+                });
+                *lock(&self.removal) = Some(removal);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+/// Where a dropped [`PartFile`] leaves the task that is deleting it, so the
+/// transfer can wait for the deletion before reporting its end.
+type Removal = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
+/// Waits for a partial file's deletion, but not for long: the transfer's
+/// end should not hang on a folder the system is still asking about.
+async fn removed(removal: &Removal) {
+    let pending = lock(removal).take();
+    if let Some(pending) = pending {
+        let _ = tokio::time::timeout(Duration::from_secs(2), pending).await;
     }
 }
 
@@ -556,7 +619,7 @@ struct OutgoingFile {
 /// Sends the outbox's files one after another until it is empty. The phone
 /// fetches payloads in order and only one at a time, so offering the next
 /// file before the current one is fetched would only make it time out.
-async fn run_outbox(outbox: Arc<Mutex<Outbox>>, link: LinkContext) {
+async fn run_outbox(outbox: Arc<Mutex<Outbox>>, link: SharedLink) {
     loop {
         let (mut file, files, bytes) = {
             let mut outbox = lock(&outbox);
@@ -569,7 +632,7 @@ async fn run_outbox(outbox: Arc<Mutex<Outbox>>, link: LinkContext) {
                 outbox.files -= 1;
                 outbox.bytes -= file.meta.size;
                 if outbox.announced {
-                    link.sender.send(outbox.update_packet());
+                    let _ = send(&link, outbox.update_packet());
                 }
                 drop(outbox);
                 file.reporter.finish(stop.state());
@@ -602,7 +665,7 @@ async fn send_file(
     meta: &FileMeta,
     files: u64,
     bytes: u64,
-    link: &LinkContext,
+    link: &SharedLink,
     reporter: &mut Reporter,
 ) -> io::Result<()> {
     let mut body = Map::new();
@@ -625,7 +688,7 @@ async fn send_file(
         return send(link, packet);
     }
     let mut source = File::open(path).await?;
-    let offer = Offer::bind(link.peer.clone()).await?;
+    let offer = Offer::bind(current(link)?.peer).await?;
     offer.attach(&mut packet, meta.size);
     send(link, packet)?;
     let mut stream = offer.accept().await.map_err(|error| {
@@ -646,8 +709,15 @@ async fn send_file(
     stream.shutdown().await
 }
 
-fn send(link: &LinkContext, packet: Packet) -> io::Result<()> {
-    if link.sender.send(packet) {
+/// The link as it is now, or an error if the device has disconnected.
+fn current(link: &SharedLink) -> io::Result<LinkContext> {
+    lock(link)
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "the device disconnected"))
+}
+
+fn send(link: &SharedLink, packet: Packet) -> io::Result<()> {
+    if current(link)?.sender.send(packet) {
         Ok(())
     } else {
         Err(io::Error::new(
@@ -781,6 +851,14 @@ mod tests {
     use super::*;
     use crate::plugins::testing::{Event, Harness};
 
+    /// The plugin as the manager hands it packets: told the device is
+    /// connected, so it has a link to send on.
+    fn connected(harness: &mut Harness) -> Box<dyn Plugin> {
+        let mut plugin = (REGISTRATION.create)();
+        plugin.connected(&mut harness.ctx());
+        plugin
+    }
+
     fn request(body: Value) -> Packet {
         let Value::Object(body) = body else {
             panic!("body must be an object")
@@ -874,6 +952,70 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_replaced_link_does_not_interrupt_a_file_being_received() {
+        let mut harness = Harness::new();
+        let mut plugin = connected(&mut harness);
+        let data = pattern(60_000);
+        let (first, rest) = data.split_at(20_000);
+        let (release, held) = oneshot::channel();
+        let mut packet = file_request("photo.jpg", 1, data.len() as u64);
+        let phone = phone_offers(
+            &harness,
+            &mut packet,
+            data.len() as u64,
+            first.to_vec(),
+            Some((held, rest.to_vec())),
+        )
+        .await;
+        plugin.packet(&packet, &mut harness.ctx());
+        wait_for_part_file(&harness.download_dir).await;
+
+        // The phone announces itself again mid-transfer, as it does every
+        // few minutes, and a new link takes over.
+        plugin.link_replaced(&mut harness.ctx());
+        release.send(()).unwrap();
+
+        let transfers = transfers_until_ended(&harness, 1).await;
+        let path = harness.download_dir.join("photo.jpg");
+        assert_eq!(
+            ended(&transfers)[0].state,
+            TransferState::Finished { path: path.clone() }
+        );
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        phone.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn files_sent_after_a_link_is_replaced_use_the_new_link() {
+        let mut harness = Harness::new();
+        let mut plugin = connected(&mut harness);
+        plugin.link_replaced(&mut harness.ctx());
+
+        std::fs::create_dir_all(&harness.cache_dir).unwrap();
+        let path = harness.cache_dir.join("note.txt");
+        std::fs::write(&path, b"sent after the link changed").unwrap();
+        plugin.command(Command::SendFiles { paths: vec![path] }, &mut harness.ctx());
+
+        let packet = harness.next_sent().await;
+        assert_eq!(packet.kind, TYPE_SHARE_REQUEST);
+        let incoming = Incoming::from_packet(&packet, harness.device_side_peer()).unwrap();
+        let mut received = Vec::new();
+        incoming
+            .open()
+            .await
+            .unwrap()
+            .read_to_end(&mut received)
+            .await
+            .unwrap();
+        assert_eq!(received, b"sent after the link changed");
+        let transfers = transfers_until_ended(&harness, 1).await;
+        assert!(matches!(
+            ended(&transfers)[0].state,
+            TransferState::Finished { .. }
+        ));
+    }
+
     fn start_id(harness: &Harness) -> u64 {
         match harness.recorder.take().as_slice() {
             [Event::Transfer(transfer)] => transfer.id,
@@ -884,7 +1026,7 @@ mod tests {
     #[test]
     fn text_and_links_go_to_the_delegate() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
 
         plugin.packet(&request(json!({"text": "hi there"})), &mut harness.ctx());
         plugin.packet(
@@ -903,7 +1045,7 @@ mod tests {
     #[tokio::test]
     async fn a_file_arrives_whole_with_its_name_and_date() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let data = pattern(300_000);
         let len = data.len() as u64;
 
@@ -945,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_collision_keeps_both_files() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         std::fs::create_dir_all(&harness.download_dir).unwrap();
         std::fs::write(harness.download_dir.join("photo.jpg"), b"old").unwrap();
 
@@ -1009,7 +1151,7 @@ mod tests {
     #[tokio::test]
     async fn hostile_names_stay_in_the_download_folder() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
 
         let mut phones = Vec::new();
         for name in ["../../escape.txt", "/etc/passwd", ".."] {
@@ -1037,7 +1179,7 @@ mod tests {
     #[tokio::test]
     async fn a_short_payload_fails_and_leaves_nothing() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
 
         let mut packet = file_request("short.bin", 1, 1000);
         let phone = phone_offers(&harness, &mut packet, 1000, pattern(500), None).await;
@@ -1056,7 +1198,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_file_needs_no_payload() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
 
         plugin.packet(&file_request("empty.txt", 1, 0), &mut harness.ctx());
         let transfers = transfers_until_ended(&harness, 1).await;
@@ -1071,7 +1213,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_an_incoming_file_deletes_the_partial_copy() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let (release, held) = oneshot::channel();
 
         let mut packet = file_request("big.bin", 1, 200_000);
@@ -1098,7 +1240,7 @@ mod tests {
     #[tokio::test]
     async fn a_disconnect_fails_running_transfers() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let (release, held) = oneshot::channel();
 
         let mut packet = file_request("big.bin", 1, 200_000);
@@ -1130,7 +1272,7 @@ mod tests {
     #[tokio::test]
     async fn a_batch_arrives_in_order() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let files: [(&str, &[u8]); 3] = [
             ("a.txt", b"first"),
             ("b.txt", b"second"),
@@ -1185,7 +1327,7 @@ mod tests {
     #[tokio::test]
     async fn a_file_reaches_the_device_with_its_metadata() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let data = pattern(200_000);
         let source = source_file(&harness, "notes.pdf", &data, 1_500_000_000_123);
         let missing = harness.cache_dir.join("missing.bin");
@@ -1215,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn folders_are_not_sent() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         std::fs::create_dir_all(&harness.cache_dir).unwrap();
 
         let paths = vec![harness.cache_dir.clone()];
@@ -1233,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn a_batch_goes_one_file_at_a_time() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let first = source_file(&harness, "one.txt", b"first", 1_000);
         let second = source_file(&harness, "two.txt", b"second!", 2_000);
 
@@ -1265,7 +1407,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_an_outgoing_file_moves_on_to_the_next() {
         let mut harness = Harness::new();
-        let mut plugin = (REGISTRATION.create)();
+        let mut plugin = connected(&mut harness);
         let first = source_file(&harness, "one.txt", b"first", 1_000);
         let second = source_file(&harness, "two.txt", b"second!", 2_000);
 
