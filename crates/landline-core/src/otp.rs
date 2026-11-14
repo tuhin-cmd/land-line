@@ -57,6 +57,26 @@ pub fn extract(text: &str) -> Option<String> {
     best.map(|(_, code)| code)
 }
 
+/// Why [`extract`] finds no code in `text`, in words that say nothing about
+/// the text itself, so that they can go in a log. `None` if it finds one.
+pub(crate) fn why_not(text: &str) -> Option<&'static str> {
+    if extract(text).is_some() {
+        return None;
+    }
+    let chars = normalize(text);
+    let digits = chars.iter().filter(|c| c.is_ascii_digit()).count();
+    let reason = if digits < 4 {
+        "too few digits for a code"
+    } else if find_keywords(&chars).is_empty() {
+        "digits, but no word that says they are a code"
+    } else if candidates(&chars).is_empty() {
+        "a code word, but no number shaped like a code"
+    } else {
+        "a code word and a number, too far apart"
+    };
+    Some(reason)
+}
+
 /// Characters between a keyword and a code, beyond which they are unrelated.
 const MAX_GAP: usize = 60;
 /// How close a year-like number must be to a keyword to count.
@@ -686,6 +706,20 @@ mod tests {
         ("আপনার অ্যাকাউন্টে ৫০০০ টাকা জমা হয়েছে। পিন কাউকে বলবেন না", None),
         ("আপনার পিন পরিবর্তন হয়েছে। হেল্পলাইন: কল ১৬২৪৭", None),
     ];
+
+    #[test]
+    fn says_why_a_text_has_no_code() {
+        assert_eq!(why_not("Your code is 482913"), None);
+        assert_eq!(why_not("See you at 5"), Some("too few digits for a code"));
+        assert_eq!(
+            why_not("Order 48291377 has shipped"),
+            Some("digits, but no word that says they are a code")
+        );
+        assert_eq!(
+            why_not("Your code was sent. Paid 5,000.00 today"),
+            Some("a code word, but no number shaped like a code")
+        );
+    }
 
     #[test]
     fn extracts_codes_and_rejects_lookalikes() {

@@ -8,15 +8,21 @@
 //! time the link comes up, so we ask on every connection, with the cheapest
 //! request there is: one conversation, for a thread ID that cannot exist
 //! (`SMSHelper.ThreadID.invalidThreadId`), which flips the flag and is
-//! answered with an empty list. Asking for all conversations would do the
-//! same at the cost of one packet per conversation on the phone.
+//! answered with an empty list.
 //!
 //! What a push contains is not "the new message" but every message dated at
 //! or after the newest one the phone had already seen (`sendLatestMessage`,
 //! `getMessagesInRange(..., mostRecentTimestamp, ...)`), so the same message
-//! comes back on every later change (read flags, sent replies), and the
-//! first push after a link comes up carries the newest message from before
-//! it. See [`Sms::is_new`] for how those are told apart.
+//! comes back on every later change (read flags, sent replies).
+//!
+//! A code often arrives while the phone is asleep and its link is down. The
+//! message wakes the phone, the phone reconnects, and nothing is pushed:
+//! the database changed before we asked. So once the phone has answered on
+//! a new link we also ask for the latest message of every conversation
+//! (`handleRequestAllConversations`). That costs the phone a packet per
+//! conversation, so it is not done more often than [`Timing::catch_up`].
+//! What is news among all of this is decided by age alone; see
+//! [`Sms::is_new`].
 //!
 //! A message, as `SMSHelper.Message.toJsonObject` writes it:
 //!
@@ -53,11 +59,16 @@ pub struct SmsMessage {
 pub(crate) const TYPE_SMS_MESSAGES: &str = "kdeconnect.sms.messages";
 /// Asks for the messages of one conversation.
 pub(crate) const TYPE_SMS_REQUEST_CONVERSATION: &str = "kdeconnect.sms.request_conversation";
+/// Asks for the latest message of every conversation.
+pub(crate) const TYPE_SMS_REQUEST_CONVERSATIONS: &str = "kdeconnect.sms.request_conversations";
 
 pub(crate) const REGISTRATION: Registration = Registration {
     name: "sms",
     incoming: &[TYPE_SMS_MESSAGES],
-    outgoing: &[TYPE_SMS_REQUEST_CONVERSATION],
+    outgoing: &[
+        TYPE_SMS_REQUEST_CONVERSATION,
+        TYPE_SMS_REQUEST_CONVERSATIONS,
+    ],
     create: || Box::new(Sms::new(Timing::DEFAULT)),
 };
 
@@ -67,12 +78,10 @@ const MESSAGE_TYPE_INBOX: i64 = 1;
 const EVENT_TEXT_MESSAGE: i64 = 0x1;
 
 /// A message dated more than this before the packet that carries it is not
-/// news: the phone pushes within moments of a message arriving, so an older
-/// one is a resend, and a code that old should not reach the clipboard.
-const MAX_AGE_MS: i64 = 10 * 60 * 1000;
-/// Slack on the link-up time, which is estimated, and on MMS dates, which
-/// the phone stores in whole seconds.
-const LINK_UP_GRACE_MS: i64 = 2_000;
+/// news. Long enough that a code which arrived while the phone was asleep is
+/// still caught when the phone comes back; short enough that a code which
+/// has probably expired does not reach the clipboard.
+const MAX_AGE_MS: i64 = 5 * 60 * 1000;
 
 /// When to ask the phone again.
 #[derive(Clone, Copy)]
@@ -84,12 +93,17 @@ struct Timing {
     /// (a permission granted, the plugin toggled), and only a new request
     /// turns pushes back on.
     refresh: Duration,
+    /// The least time between two requests for every conversation's latest
+    /// message. Links are replaced every few minutes, and in bursts while
+    /// the phone is in use.
+    catch_up: Duration,
 }
 
 impl Timing {
     const DEFAULT: Self = Self {
         retry: Duration::from_secs(5),
         refresh: Duration::from_secs(5 * 60),
+        catch_up: Duration::from_secs(3 * 60),
     };
 }
 
@@ -102,8 +116,10 @@ struct MessageKey {
 
 struct Sms {
     timing: Timing,
-    /// When the current link came up, on this machine's clock.
-    link_up: Option<Instant>,
+    connected: bool,
+    /// Whether to ask for the latest messages when the phone next answers.
+    catch_up_due: bool,
+    last_catch_up: Option<Instant>,
     /// Messages already reported, with their dates, for pruning.
     seen: HashMap<MessageKey, i64>,
     /// Set once the phone sends anything, which means it heard a request.
@@ -115,7 +131,9 @@ impl Sms {
     fn new(timing: Timing) -> Self {
         Self {
             timing,
-            link_up: None,
+            connected: false,
+            catch_up_due: false,
+            last_catch_up: None,
             seen: HashMap::new(),
             answered: Arc::new(AtomicBool::new(false)),
             requester: None,
@@ -129,36 +147,25 @@ impl Sms {
     }
 
     /// Whether `message`, in a packet the phone sent at `sent_ms` on its own
-    /// clock, arrived on the phone since the link came up.
+    /// clock, is news: recent, and not reported before.
     ///
-    /// Both sides of each comparison are on the phone's clock: the packet
-    /// `id` is the phone's time when it wrote the packet, and the link-up
-    /// time is that minus how long ago, by our clock, the link came up. So
-    /// a phone whose clock is off by minutes still works, which comparing
-    /// message dates with this machine's clock would not.
+    /// Both sides of the comparison are on the phone's clock (the packet
+    /// `id` is the phone's time when it wrote the packet), so a phone whose
+    /// clock is off by minutes still works, which comparing message dates
+    /// with this machine's clock would not.
     ///
-    /// - Dated before the link came up: the newest old message, which the
-    ///   first push after link-up repeats, or anything an answer to a
-    ///   request might carry.
-    /// - Dated well before the packet: a resend, see [`MAX_AGE_MS`].
-    /// - Already seen: the phone repeats the newest message on every change.
-    fn is_new(&self, message: &Parsed, sent_ms: i64, link_up_ms: i64) -> bool {
-        message.date >= link_up_ms - LINK_UP_GRACE_MS
-            && message.date >= sent_ms - MAX_AGE_MS
-            && !self.seen.contains_key(&message.key)
+    /// When the message arrived relative to the link does not matter, and
+    /// must not: a code that wakes a sleeping phone is dated before the link
+    /// that then carries it.
+    fn is_new(&self, message: &Parsed, sent_ms: i64) -> bool {
+        is_recent(message, sent_ms) && !self.seen.contains_key(&message.key)
     }
-}
 
-impl Drop for Sms {
-    fn drop(&mut self) {
+    /// Starts asking on a new link.
+    fn start(&mut self, ctx: &mut Context<'_>) {
         self.stop_requesting();
-    }
-}
-
-impl Plugin for Sms {
-    fn connected(&mut self, ctx: &mut Context<'_>) {
-        self.stop_requesting();
-        self.link_up = Some(Instant::now());
+        self.connected = true;
+        self.catch_up_due = true;
         self.answered = Arc::new(AtomicBool::new(false));
         ctx.send(request());
 
@@ -173,9 +180,50 @@ impl Plugin for Sms {
         }
     }
 
+    /// Asks for the latest messages if a new link has not been caught up
+    /// yet. Called when the phone has just sent something, so its plugin
+    /// for this link is loaded and the request will be heard. If the last
+    /// one was too recent, the next packet tries again.
+    fn catch_up(&mut self, ctx: &mut Context<'_>) {
+        if !self.catch_up_due
+            || self
+                .last_catch_up
+                .is_some_and(|last| last.elapsed() < self.timing.catch_up)
+        {
+            return;
+        }
+        if ctx.send(Packet::new(TYPE_SMS_REQUEST_CONVERSATIONS, Map::new())) {
+            tracing::debug!(
+                device = ctx.device_id,
+                "asked the phone for its latest messages"
+            );
+            self.catch_up_due = false;
+            self.last_catch_up = Some(Instant::now());
+        }
+    }
+}
+
+impl Drop for Sms {
+    fn drop(&mut self) {
+        self.stop_requesting();
+    }
+}
+
+impl Plugin for Sms {
+    fn connected(&mut self, ctx: &mut Context<'_>) {
+        self.start(ctx);
+    }
+
+    // A link is often replaced because the phone lost its side without our
+    // side noticing, and then the phone has a new SMS plugin that has not
+    // been asked. What was already reported stays reported.
+    fn link_replaced(&mut self, ctx: &mut Context<'_>) {
+        self.start(ctx);
+    }
+
     fn disconnected(&mut self, _ctx: &mut Context<'_>) {
         self.stop_requesting();
-        self.link_up = None;
+        self.connected = false;
     }
 
     fn packet(&mut self, packet: &Packet, ctx: &mut Context<'_>) {
@@ -183,33 +231,48 @@ impl Plugin for Sms {
             return;
         }
         self.answered.store(true, Ordering::Relaxed);
-        let Some(link_up) = self.link_up else {
+        if !self.connected {
             return;
-        };
+        }
+        self.catch_up(ctx);
         let sent_ms = if packet.id > 0 {
             packet.id
         } else {
             now_millis()
         };
-        let since_link_up = i64::try_from(link_up.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let link_up_ms = sent_ms.saturating_sub(since_link_up);
 
         let Some(Value::Array(messages)) = packet.body.get("messages") else {
             tracing::debug!(device = ctx.device_id, "SMS packet without a message list");
             return;
         };
-        let mut new: Vec<Parsed> = messages
+        let recent: Vec<Parsed> = messages
             .iter()
             .filter_map(Parsed::from_json)
-            .filter(|message| message.is_received_text())
-            .filter(|message| self.is_new(message, sent_ms, link_up_ms))
+            .filter(|message| message.is_received_text() && is_recent(message, sent_ms))
             .collect();
-        tracing::debug!(
-            device = ctx.device_id,
-            total = messages.len(),
-            new = new.len(),
-            "SMS packet"
-        );
+        let recent_count = recent.len();
+        let mut new: Vec<Parsed> = recent
+            .into_iter()
+            .filter(|message| self.is_new(message, sent_ms))
+            .collect();
+        // Counts only: enough to tell from a log why a message was passed
+        // over. A catch-up is answered with a packet per conversation, nearly
+        // all of them old, so those are kept out of the log.
+        if recent_count > 0 {
+            tracing::debug!(
+                device = ctx.device_id,
+                total = messages.len(),
+                recent = recent_count,
+                new = new.len(),
+                "SMS packet"
+            );
+        } else {
+            tracing::trace!(
+                device = ctx.device_id,
+                total = messages.len(),
+                "SMS packet with nothing recent"
+            );
+        }
 
         // The phone lists newest first; report in the order they arrived.
         new.sort_by_key(|message| message.date);
@@ -225,6 +288,9 @@ impl Plugin for Sms {
                 time_ms: message.date,
             };
             ctx.delegate.sms_received(ctx.device_id, &sms);
+            if let Some(reason) = crate::otp::why_not(&sms.body) {
+                tracing::debug!(device = ctx.device_id, reason, "new SMS without a code");
+            }
             ctx.scan_for_otp(&sms.sender, &sms.body);
         }
 
@@ -263,6 +329,11 @@ async fn keep_requesting(sender: PacketSender, answered: Arc<AtomicBool>, timing
             return;
         }
     }
+}
+
+/// Whether `message` is young enough, by the phone's clock, to be news.
+fn is_recent(message: &Parsed, sent_ms: i64) -> bool {
+    message.date >= sent_ms - MAX_AGE_MS
 }
 
 /// The fields of one message that decide whether and how to report it.
@@ -420,18 +491,105 @@ mod tests {
     }
 
     #[test]
-    fn the_message_from_before_the_link_is_not_news() {
+    fn a_message_from_just_before_the_link_is_news() {
         let (mut harness, mut plugin) = connected();
         let now = now_millis();
-        // The first push after link-up carries the newest old message, dated
-        // a minute before the link came up, and the new one.
-        let old = sms(40, 1, SENDER, "See you tomorrow", now - 60_000);
-        let new = sms(41, 1, SENDER, "Running late", now);
+        // A message that woke the phone is dated before the link the phone
+        // then made. The first push carries it along with the next one.
+        let earlier = sms(40, 1, SENDER, "See you tomorrow", now - 90_000);
+        let later = sms(41, 1, SENDER, "Running late", now);
 
-        plugin.packet(&push(now, vec![new, old]), &mut harness.ctx());
-        let reported = sms_events(&harness.recorder.take());
-        assert_eq!(reported.len(), 1);
-        assert_eq!(reported[0].body, "Running late");
+        plugin.packet(&push(now, vec![later, earlier]), &mut harness.ctx());
+        let bodies: Vec<String> = sms_events(&harness.recorder.take())
+            .into_iter()
+            .map(|message| message.body)
+            .collect();
+        assert_eq!(bodies, ["See you tomorrow", "Running late"]);
+    }
+
+    #[test]
+    fn asks_for_the_latest_messages_once_the_phone_answers() {
+        let (mut harness, mut plugin) = connected();
+        harness.sent();
+
+        // The empty answer to the first request shows the phone is listening.
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        let sent = harness.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, TYPE_SMS_REQUEST_CONVERSATIONS);
+
+        // Only once for a link.
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        assert_eq!(harness.sent(), []);
+    }
+
+    #[test]
+    fn a_replaced_link_is_asked_again_but_not_caught_up_too_often() {
+        let (mut harness, mut plugin) = connected();
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        harness.sent();
+
+        plugin.link_replaced(&mut harness.ctx());
+        let sent = harness.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, TYPE_SMS_REQUEST_CONVERSATION);
+
+        // The last catch-up was moments ago.
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        assert_eq!(harness.sent(), []);
+    }
+
+    #[test]
+    fn a_replaced_link_is_caught_up_once_enough_time_has_passed() {
+        let mut harness = Harness::new();
+        let mut plugin = Sms::new(Timing {
+            catch_up: Duration::ZERO,
+            ..Timing::DEFAULT
+        });
+        plugin.connected(&mut harness.ctx());
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        plugin.link_replaced(&mut harness.ctx());
+        harness.sent();
+
+        plugin.packet(&push(now_millis(), vec![]), &mut harness.ctx());
+        let sent = harness.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].kind, TYPE_SMS_REQUEST_CONVERSATIONS);
+    }
+
+    #[test]
+    fn a_code_that_arrived_while_the_link_was_down_is_found_on_catching_up() {
+        let (mut harness, mut plugin) = connected();
+        let now = now_millis();
+        plugin.packet(&push(now, vec![]), &mut harness.ctx());
+        harness.recorder.take();
+
+        // The answer to the catch-up: one packet per conversation, each with
+        // that conversation's latest message.
+        let chat = sms(44, 1, SENDER, "See you tomorrow", now - 86_400_000);
+        let code = sms(
+            45,
+            1,
+            SHOP,
+            "Your ExampleShop verification code is 482913.",
+            now - 120_000,
+        );
+        plugin.packet(&push(now, vec![chat]), &mut harness.ctx());
+        plugin.packet(&push(now, vec![code.clone()]), &mut harness.ctx());
+        let events = harness.recorder.take();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1],
+            Event::Otp(OtpCode {
+                code: "482913".into(),
+                source: SHOP.into(),
+            })
+        );
+
+        // The next link's catch-up brings the same message back.
+        plugin.link_replaced(&mut harness.ctx());
+        plugin.packet(&push(now + 60_000, vec![code]), &mut harness.ctx());
+        assert_eq!(harness.recorder.take(), []);
     }
 
     #[test]
@@ -583,6 +741,7 @@ mod tests {
         let mut plugin = Sms::new(Timing {
             retry: Duration::from_millis(10),
             refresh: Duration::from_millis(40),
+            ..Timing::DEFAULT
         });
         plugin.connected(&mut harness.ctx());
 
