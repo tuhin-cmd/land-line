@@ -121,12 +121,17 @@ pub(crate) struct DeviceStatus {
 }
 
 /// One-time codes seen recently on a device. The same code usually arrives
-/// twice, as an SMS and as the messaging app's notification.
+/// twice, as an SMS and as the messaging app's notification, and the phone
+/// lists its notifications again whenever it reconnects.
 #[derive(Default)]
 pub(crate) struct RecentOtps(Vec<(String, Instant)>);
 
 impl RecentOtps {
-    const WINDOW: Duration = Duration::from_secs(120);
+    /// Longer than either source still treats a message as new (ten minutes
+    /// for a notification, five for an SMS), so a code the phone shows again
+    /// after reconnecting is not put on the clipboard a second time, over
+    /// whatever was copied since.
+    const WINDOW: Duration = Duration::from_secs(15 * 60);
 
     /// Records `code`; `true` if it was not seen within the window.
     fn insert(&mut self, code: &str) -> bool {
