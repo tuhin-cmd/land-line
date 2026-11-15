@@ -113,6 +113,25 @@ import Testing
         #expect(backend.sent.isEmpty)
     }
 
+    @Test func clearingAllFromThePanelLeavesWhatThePhoneKeeps() {
+        let model = connectedModel()
+        #expect(!model.canClearNotifications)
+        for id in ["1", "2", "3", "4", "5", "6"] {
+            model.handle(.notificationPosted(deviceId: "p", notification: phoneNotification(id, dismissable: true)))
+        }
+        model.handle(.notificationPosted(deviceId: "p", notification: phoneNotification("call", dismissable: false)))
+        #expect(model.canClearNotifications)
+
+        model.dismissAllNotifications()
+        // More than the panel shows at once, and all of them go.
+        for id in ["1", "2", "3", "4", "5", "6"] {
+            #expect(backend.sent.map(\.0).contains(.dismissNotification(id: id)))
+        }
+        #expect(backend.sent.count == 6)
+        #expect(model.listedNotifications.map(\.notification.id) == ["call"])
+        #expect(!model.canClearNotifications)
+    }
+
     @Test func dismissingFromThePanel() {
         let model = connectedModel()
         model.handle(.notificationPosted(deviceId: "p", notification: phoneNotification("1")))

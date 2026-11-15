@@ -56,11 +56,20 @@ struct NotificationList: View {
     var body: some View {
         let showDevice = Set(items.map(\.deviceId)).count > 1
         VStack(alignment: .leading, spacing: 2) {
-            Text("Notifications")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.bottom, 2)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Notifications")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if model.canClearNotifications {
+                    Button("Clear All") { model.dismissAllNotifications() }
+                        .buttonStyle(.borderless)
+                        .font(.subheadline)
+                        .help("Clear these on the phone too")
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 2)
             ForEach(items.prefix(Self.limit)) { item in
                 NotificationRow(item: item, showDevice: showDevice) {
                     model.dismiss(item.notification.id, on: item.deviceId)

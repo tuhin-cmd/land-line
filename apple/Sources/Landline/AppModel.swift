@@ -322,6 +322,21 @@ final class AppModel {
         removeNotification(notificationId, on: deviceId)
     }
 
+    /// Whether the panel lists anything a phone would let go of.
+    var canClearNotifications: Bool {
+        listedNotifications.contains { $0.notification.dismissable }
+    }
+
+    /// Clears every listed notification, on the phones too, including those
+    /// the panel folds into "more". What a phone will not let go of (a call,
+    /// music playing) stays, and so does anything from a muted app, which
+    /// was never listed.
+    func dismissAllNotifications() {
+        for item in listedNotifications where item.notification.dismissable {
+            dismiss(item.notification.id, on: item.deviceId)
+        }
+    }
+
     private func dismissOnPhone(_ notificationId: String, on deviceId: String) {
         // A failure means the phone is gone, and the notification with it
         // as far as the Mac is concerned; nothing worth interrupting for.
