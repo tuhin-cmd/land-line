@@ -209,8 +209,8 @@ impl Notifications {
         let app_name = field("appName");
         let mut title = field("title");
         let mut text = field("text");
-        if title.is_empty() && text.is_empty() {
-            text = field("ticker");
+        if text.is_empty() {
+            text = text_from_ticker(&title, &field("ticker"));
         }
         let otp_text = otp_text(&title, &text);
         if title.is_empty() && text.is_empty() {
@@ -297,6 +297,19 @@ impl Notifications {
             },
         );
     }
+}
+
+/// The text of a notification that came without one, from its ticker. The
+/// Android app writes the ticker as "title: text" and, for some styles of
+/// notification, leaves the text itself out, so a code can be in the ticker
+/// alone. A ticker that only repeats the title adds nothing.
+fn text_from_ticker(title: &str, ticker: &str) -> String {
+    let ticker = ticker.trim();
+    let rest = match ticker.strip_prefix(title) {
+        Some(rest) if !title.is_empty() => rest.strip_prefix(':').unwrap_or(rest).trim_start(),
+        _ => ticker,
+    };
+    rest.to_owned()
 }
 
 /// What Android 15 and later put in place of a notification's text when it
@@ -774,6 +787,57 @@ mod tests {
                 .recorder
                 .take()
                 .contains(&Event::CodeHidden("Example Messages".into()))
+        );
+    }
+
+    #[test]
+    fn the_ticker_stands_in_for_a_missing_text() {
+        assert_eq!(
+            text_from_ticker("Bank", "Bank: Your code is 482913"),
+            "Your code is 482913"
+        );
+        assert_eq!(
+            text_from_ticker("", "Bank: Your code is 482913"),
+            "Bank: Your code is 482913"
+        );
+        assert_eq!(
+            text_from_ticker("Bank", "Your code is 482913"),
+            "Your code is 482913"
+        );
+        // Only the title again: nothing to add.
+        assert_eq!(text_from_ticker("Bank", "Bank"), "");
+        assert_eq!(text_from_ticker("Bank", ""), "");
+    }
+
+    #[test]
+    fn a_code_that_is_only_in_the_ticker_is_found() {
+        let mut harness = Harness::new();
+        let mut plugin = (REGISTRATION.create)();
+        // As the Android app sends a big-text notification: a title and a
+        // ticker, and no text.
+        plugin.packet(
+            &packet(json!({
+                "id": "ticker-only",
+                "appName": "Example Messages",
+                "title": "Example Bank",
+                "ticker": "Example Bank: 482913 is your Example Bank verification code.",
+                "time": "1700000000000",
+                "isClearable": true,
+                "silent": false,
+            })),
+            &mut harness.ctx(),
+        );
+        let events = harness.recorder.take();
+        assert!(events.contains(&Event::Otp(crate::OtpCode {
+            code: "482913".into(),
+            source: "Example Messages".into(),
+        })));
+        let posted = posted_events(&events);
+        assert_eq!(posted.len(), 1);
+        assert_eq!(posted[0].title, "Example Bank");
+        assert_eq!(
+            posted[0].text,
+            "482913 is your Example Bank verification code."
         );
     }
 

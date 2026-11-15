@@ -102,7 +102,9 @@ struct HiddenCode: Equatable, Sendable {
     let deviceName: String?
 
     /// Lets the phone's KDE Connect read such notifications. Run once from a
-    /// computer the phone is attached to, with USB debugging on.
+    /// computer the phone is attached to, with USB debugging on. Android
+    /// decides whether to trust the app when the app starts listening, so
+    /// it takes effect once KDE Connect has been restarted.
     static let command =
         "adb shell cmd appops set --user 0 org.kde.kdeconnect_tp RECEIVE_SENSITIVE_NOTIFICATIONS allow"
 
@@ -110,7 +112,8 @@ struct HiddenCode: Equatable, Sendable {
         let app = appName.isEmpty ? "An app" : appName
         let place = deviceName.map { " on \($0)" } ?? ""
         return "\(app)\(place) showed a code, but Android kept it from KDE Connect, so Landline never saw it. "
-            + "To allow it, turn on USB debugging on the phone, connect it to a computer, and run this once:"
+            + "To allow it, turn on USB debugging on the phone, connect it to a computer, run this once, "
+            + "and restart the phone:"
     }
 }
 
