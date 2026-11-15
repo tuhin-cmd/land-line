@@ -162,6 +162,11 @@ impl CoreDelegate for Forward {
             "event": "otp", "device": device_id, "code": otp.code, "source": otp.source,
         }));
     }
+    fn code_hidden(&self, device_id: &str, app_name: &str) {
+        self.other(serde_json::json!({
+            "event": "code_hidden", "device": device_id, "app": app_name,
+        }));
+    }
     fn clipboard_received(&self, device_id: &str, text: &str) {
         self.other(serde_json::json!({
             "event": "clipboard", "device": device_id, "text": text,

@@ -33,6 +33,12 @@ final class AppSettings {
         didSet { defaults.set(openLinksAutomatically, forKey: Key.openLinks) }
     }
 
+    /// The owner closed the explanation of codes Android hides; it stays
+    /// closed.
+    var hiddenCodeHelpDismissed: Bool {
+        didSet { defaults.set(hiddenCodeHelpDismissed, forKey: Key.hiddenCodeHelpDismissed) }
+    }
+
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults) {
@@ -45,6 +51,7 @@ final class AppSettings {
         mutedApps = (defaults.stringArray(forKey: Key.mutedApps) ?? []).sorted(by: Self.finderOrder)
         downloadDir = defaults.string(forKey: Key.downloadDir)
         openLinksAutomatically = defaults.object(forKey: Key.openLinks) as? Bool ?? false
+        hiddenCodeHelpDismissed = defaults.bool(forKey: Key.hiddenCodeHelpDismissed)
     }
 
     func isMuted(_ appName: String) -> Bool {
@@ -71,5 +78,6 @@ final class AppSettings {
         static let mutedApps = "mutedApps"
         static let downloadDir = "downloadDir"
         static let openLinks = "openLinksAutomatically"
+        static let hiddenCodeHelpDismissed = "hiddenCodeHelpDismissed"
     }
 }

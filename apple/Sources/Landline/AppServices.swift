@@ -92,6 +92,28 @@ final class DemoWorkspace: Workspace {
     }
 }
 
+/// A one-time code the phone would not hand over. Android 15 and later keep
+/// the text of a notification that carries a code from apps the phone does
+/// not trust with it, and the phone's KDE Connect is not one until the owner
+/// allows it. Nothing on the Mac can change that, so the panel explains it.
+struct HiddenCode: Equatable, Sendable {
+    /// The phone app whose notification was hidden, or empty.
+    let appName: String
+    let deviceName: String?
+
+    /// Lets the phone's KDE Connect read such notifications. Run once from a
+    /// computer the phone is attached to, with USB debugging on.
+    static let command =
+        "adb shell cmd appops set --user 0 org.kde.kdeconnect_tp RECEIVE_SENSITIVE_NOTIFICATIONS allow"
+
+    var message: String {
+        let app = appName.isEmpty ? "An app" : appName
+        let place = deviceName.map { " on \($0)" } ?? ""
+        return "\(app)\(place) showed a code, but Android kept it from KDE Connect, so Landline never saw it. "
+            + "To allow it, turn on USB debugging on the phone, connect it to a computer, and run this once:"
+    }
+}
+
 /// A one-time code as the panel shows it.
 struct ReceivedCode: Equatable, Sendable {
     let code: String

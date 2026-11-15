@@ -272,6 +272,10 @@ pub trait CoreDelegate: Send + Sync {
     /// A one-time code arrived in an SMS or a notification. Reported once
     /// per code, even when both carry it.
     fn otp_detected(&self, device_id: String, otp: OtpCode);
+    /// The phone showed a notification from `app_name` whose text Android
+    /// had hidden as sensitive, which it does to one-time codes unless the
+    /// phone app is allowed to read them.
+    fn code_hidden(&self, device_id: String, app_name: String);
     /// The device offered its clipboard text.
     fn clipboard_received(&self, device_id: String, text: String);
     /// A file transfer started, progressed, or ended.
@@ -351,6 +355,11 @@ impl landline_core::CoreDelegate for DelegateAdapter {
             source: otp.source.clone(),
         };
         self.0.otp_detected(device_id.to_owned(), otp);
+    }
+
+    fn code_hidden(&self, device_id: &str, app_name: &str) {
+        self.0
+            .code_hidden(device_id.to_owned(), app_name.to_owned());
     }
 
     fn clipboard_received(&self, device_id: &str, text: &str) {

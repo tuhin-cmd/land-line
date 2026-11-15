@@ -51,6 +51,13 @@ struct PopoverView: View {
                     onCopy: { model.copyCode(code.code) },
                     onDismiss: { model.clearLatestCode() })
             }
+            if let hidden = model.hiddenCode {
+                HiddenCodeCard(
+                    hidden: hidden,
+                    copied: model.hiddenCodeCommandCopied,
+                    onCopy: { model.copyHiddenCodeCommand() },
+                    onDismiss: { model.dismissHiddenCodeHelp() })
+            }
             if let error = model.startError {
                 ProblemView(
                     symbol: "exclamationmark.triangle",
@@ -73,6 +80,7 @@ struct PopoverView: View {
         .animation(.default, value: model.devices)
         .animation(.default, value: model.notice)
         .animation(.default, value: model.latestCode)
+        .animation(.default, value: model.hiddenCode)
         .animation(.default, value: model.listedNotifications)
         .animation(.default, value: model.confirmingUnpair)
         .animation(.default, value: model.listedTransfers.map(\.id))
@@ -303,6 +311,54 @@ private struct BlockedWarning: View {
                     .padding(.top, 4)
             }
             Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// A code Android kept from the phone app: what happened, and the command
+/// that stops it happening, ready to copy.
+private struct HiddenCodeCard: View {
+    let hidden: HiddenCode
+    let copied: Bool
+    let onCopy: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "eye.slash.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Android hid a one-time code")
+                    .font(.subheadline.weight(.semibold))
+                Text(hidden.message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(HiddenCode.command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Button(action: onCopy) {
+                    Label(copied ? "Copied" : "Copy Command", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .controlSize(.small)
+            }
+            Spacer(minLength: 0)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Don’t show this again")
+            .accessibilityLabel("Don’t show this again")
         }
         .padding(10)
         .background(.quinary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))

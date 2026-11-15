@@ -138,6 +138,11 @@ final class ClipboardSync {
         recordOwnWrite(pasteboard.write(code, concealed: true))
     }
 
+    /// Text the app itself offers to copy. Not sent on to the phone.
+    func writeOwn(_ text: String) {
+        recordOwnWrite(pasteboard.write(text, concealed: false))
+    }
+
     private func recordOwnWrite(_ count: Int) {
         ownWriteCount = count
         seenCount = count

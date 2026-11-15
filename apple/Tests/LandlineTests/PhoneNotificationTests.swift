@@ -185,6 +185,31 @@ import Testing
 
     let otp = OtpCode(code: "482913", source: "Example Bank")
 
+    @Test func aCodeAndroidHidIsExplainedUntilDismissedForGood() {
+        let model = connectedModel()
+        model.handle(.codeHidden(deviceId: "p", appName: "Messages"))
+        #expect(model.hiddenCode == HiddenCode(appName: "Messages", deviceName: "Pixel"))
+        #expect(model.hiddenCode?.message.hasPrefix("Messages on Pixel showed a code") == true)
+
+        model.copyHiddenCodeCommand()
+        #expect(model.hiddenCodeCommandCopied)
+        #expect(pasteboard.string() == HiddenCode.command)
+        #expect(!pasteboard.types.contains(PasteboardMarker.concealed))
+        // Our own copy is not clipboard text to send to the phone.
+        model.pollClipboard()
+        #expect(backend.clipboardSent.isEmpty)
+
+        model.dismissHiddenCodeHelp()
+        #expect(model.hiddenCode == nil)
+        model.handle(.codeHidden(deviceId: "p", appName: "Messages"))
+        #expect(model.hiddenCode == nil)
+    }
+
+    @Test func aHiddenCodeFromAnUnnamedAppStillReadsWell() {
+        let hidden = HiddenCode(appName: "", deviceName: nil)
+        #expect(hidden.message.hasPrefix("An app showed a code, but Android"))
+    }
+
     @Test func autoCopyPutsTheCodeOnThePasteboardConcealed() throws {
         let model = connectedModel()
         model.handle(.otpDetected(deviceId: "p", otp: otp))

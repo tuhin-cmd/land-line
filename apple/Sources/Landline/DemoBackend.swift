@@ -150,6 +150,8 @@ final class DemoBackend: DeviceBackend {
             (8, .notificationPosted(deviceId: phone, notification: Self.codeMessage)),
             (8.3, .otpDetected(deviceId: phone, otp: OtpCode(code: "482913", source: "Example Bank"))),
             (11, .clipboardReceived(deviceId: phone, text: "https://example.com/recipes/lentil-soup")),
+            // A code Android would not let the phone app read.
+            (12, .codeHidden(deviceId: phone, appName: "Messages")),
             (14, .notificationRemoved(deviceId: phone, notificationId: "demo-chat")),
         ]
         for (seconds, event) in script {

@@ -37,6 +37,7 @@ private final class SilentDelegate: CoreDelegate {
     func notificationRemoved(deviceId: String, notificationId: String) {}
     func smsReceived(deviceId: String, message: SmsMessage) {}
     func otpDetected(deviceId: String, otp: OtpCode) {}
+    func codeHidden(deviceId: String, appName: String) {}
     func clipboardReceived(deviceId: String, text: String) {}
     func transferUpdated(transfer: Transfer) {}
     func textShared(deviceId: String, text: String) {}

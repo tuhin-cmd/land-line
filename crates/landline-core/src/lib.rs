@@ -156,6 +156,11 @@ pub trait CoreDelegate: Send + Sync + 'static {
     /// A one-time code arrived in an SMS or a notification. Reported once
     /// per code, even when both carry it.
     fn otp_detected(&self, _device_id: &str, _otp: &OtpCode) {}
+    /// The phone showed a notification from `app_name` whose text Android
+    /// had replaced with a placeholder, which it does to notifications that
+    /// carry a one-time code unless the phone app is allowed to read them.
+    /// The code is lost to us; the owner can be told why.
+    fn code_hidden(&self, _device_id: &str, _app_name: &str) {}
     /// The device offered its clipboard text.
     fn clipboard_received(&self, _device_id: &str, _text: &str) {}
     /// A file transfer started, progressed, or ended.

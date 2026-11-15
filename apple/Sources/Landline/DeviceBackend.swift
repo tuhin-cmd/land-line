@@ -38,6 +38,7 @@ enum CoreEvent: Sendable {
     case notificationRemoved(deviceId: String, notificationId: String)
     case smsReceived(deviceId: String, message: SmsMessage)
     case otpDetected(deviceId: String, otp: OtpCode)
+    case codeHidden(deviceId: String, appName: String)
     case clipboardReceived(deviceId: String, text: String)
     case transferUpdated(Transfer)
     case textShared(deviceId: String, text: String)

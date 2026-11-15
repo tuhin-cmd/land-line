@@ -157,6 +157,10 @@ private final class DelegateAdapter: CoreDelegate {
         continuation.yield(.otpDetected(deviceId: deviceId, otp: otp))
     }
 
+    func codeHidden(deviceId: String, appName: String) {
+        continuation.yield(.codeHidden(deviceId: deviceId, appName: appName))
+    }
+
     func clipboardReceived(deviceId: String, text: String) {
         continuation.yield(.clipboardReceived(deviceId: deviceId, text: text))
     }

@@ -12,6 +12,11 @@ final class AppModel {
     private(set) var startError: String?
     /// The latest pairing failure or command error, until dismissed.
     var notice: Notice?
+    /// A code Android kept from the phone app, until the owner closes the
+    /// explanation.
+    private(set) var hiddenCode: HiddenCode?
+    /// Whether the command that fixes it was just copied.
+    private(set) var hiddenCodeCommandCopied = false
     /// Devices whose ping arrived in the last few seconds.
     private(set) var recentPings: Set<String> = []
     /// Devices we pinged in the last moment, to acknowledge the click.
@@ -177,6 +182,10 @@ final class AppModel {
             break
         case .otpDetected(let deviceId, let otp):
             codeDetected(otp, on: deviceId)
+        case .codeHidden(let deviceId, let appName):
+            guard !settings.hiddenCodeHelpDismissed else { return }
+            hiddenCode = HiddenCode(appName: appName, deviceName: name(of: deviceId))
+            hiddenCodeCommandCopied = false
         case .clipboardReceived(let deviceId, let text):
             guard settings.syncClipboard else { return }
             clipboard.receive(text)
@@ -437,6 +446,19 @@ final class AppModel {
 
     func clearLatestCode() {
         latestCode = nil
+    }
+
+    /// Copies the command that lets the phone app read codes Android hides.
+    func copyHiddenCodeCommand() {
+        clipboard.writeOwn(HiddenCode.command)
+        hiddenCodeCommandCopied = true
+    }
+
+    /// Closes the explanation for good: someone who cannot or will not run
+    /// the command should not be told again at every code.
+    func dismissHiddenCodeHelp() {
+        hiddenCode = nil
+        settings.hiddenCodeHelpDismissed = true
     }
 
     // MARK: Clipboard

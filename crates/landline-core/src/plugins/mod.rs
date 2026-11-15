@@ -210,6 +210,7 @@ pub(crate) mod testing {
         NotificationRemoved(String),
         Sms(SmsMessage),
         Otp(OtpCode),
+        CodeHidden(String),
         Clipboard(String),
         Transfer(Transfer),
         TextShared(String),
@@ -245,6 +246,9 @@ pub(crate) mod testing {
         }
         fn sms_received(&self, _device_id: &str, message: &SmsMessage) {
             self.push(Event::Sms(message.clone()));
+        }
+        fn code_hidden(&self, _device_id: &str, app_name: &str) {
+            self.push(Event::CodeHidden(app_name.to_owned()));
         }
         fn otp_detected(&self, _device_id: &str, otp: &OtpCode) {
             self.push(Event::Otp(otp.clone()));

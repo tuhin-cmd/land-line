@@ -253,7 +253,13 @@ impl Notifications {
             notification.time_ms,
             now_ms(),
         ) {
-            ctx.scan_for_otp(&notification.app_name, &otp_text);
+            if hidden_by_android(&notification.text) {
+                debug!("the phone hid a notification's text as sensitive");
+                ctx.delegate
+                    .code_hidden(ctx.device_id, &notification.app_name);
+            } else {
+                ctx.scan_for_otp(&notification.app_name, &otp_text);
+            }
         }
         trace!(id, "posting a notification");
         ctx.delegate
@@ -291,6 +297,17 @@ impl Notifications {
             },
         );
     }
+}
+
+/// What Android 15 and later put in place of a notification's text when it
+/// holds something sensitive, in practice a one-time code, and the app
+/// listening (here the phone's KDE Connect) may not see such things. Only
+/// the English wording is known to us; a phone in another language is not
+/// recognised.
+const ANDROID_HIDDEN_TEXT: &str = "Sensitive notification content hidden";
+
+fn hidden_by_android(text: &str) -> bool {
+    text.trim().eq_ignore_ascii_case(ANDROID_HIDDEN_TEXT)
 }
 
 /// The text scanned for a one-time code: title and text, since some apps put
@@ -729,6 +746,47 @@ mod tests {
         // The phone confirms; that is not reported twice.
         plugin.packet(&cancel("clearable"), &mut harness.ctx());
         assert!(harness.recorder.take().is_empty());
+    }
+
+    #[test]
+    fn a_notification_whose_text_android_hid_is_reported_once() {
+        let mut harness = Harness::new();
+        let mut plugin = (REGISTRATION.create)();
+        let hidden = packet(json!({
+            "id": "code",
+            "appName": "Example Messages",
+            "title": "ExampleShop",
+            "text": "Sensitive notification content hidden",
+            "time": "1700000000000",
+            "isClearable": true,
+            "silent": false,
+        }));
+
+        plugin.packet(&hidden, &mut harness.ctx());
+        let events = harness.recorder.take();
+        assert!(events.contains(&Event::CodeHidden("Example Messages".into())));
+        assert!(!events.iter().any(|event| matches!(event, Event::Otp(_))));
+
+        // The same notification again, as on every reconnect, says nothing new.
+        plugin.packet(&hidden, &mut harness.ctx());
+        assert!(
+            !harness
+                .recorder
+                .take()
+                .contains(&Event::CodeHidden("Example Messages".into()))
+        );
+    }
+
+    #[test]
+    fn only_the_placeholder_itself_counts_as_hidden() {
+        assert!(hidden_by_android("Sensitive notification content hidden"));
+        assert!(hidden_by_android(
+            " sensitive notification content hidden\n"
+        ));
+        assert!(!hidden_by_android("Your code is 482913"));
+        assert!(!hidden_by_android(
+            "He said: Sensitive notification content hidden"
+        ));
     }
 
     #[test]
